@@ -21,14 +21,16 @@ class ProfileController extends Controller
 
     public function update(Request $request): RedirectResponse
     {
-        // 1. Validasi Manual yang ketat
+        // 1. Validasi Manual yang ketat (Tambahkan alamat_domisili)
         $request->validate([
             'nama' => ['required', 'string', 'max:255'],
+            'alamat_domisili' => ['nullable', 'string', 'max:500'], // <-- TAMBAHKAN INI
             'foto_profil' => ['nullable', 'image', 'mimes:jpeg,png,jpg', 'max:2048'],
         ]);
 
         $pegawai = $request->user();
         $pegawai->nama = $request->nama;
+        $pegawai->alamat_domisili = $request->alamat_domisili; // <-- TAMBAHKAN INI
 
         // 2. Jika ada file foto yang dikirim, simpan!
         if ($request->hasFile('foto_profil')) {

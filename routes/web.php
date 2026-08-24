@@ -7,6 +7,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PembatalanController;
 use App\Http\Controllers\NotificationController; // <-- Tambahan untuk Notifikasi
+use App\Http\Controllers\MonitoringCutiController; // <-- Tambahan untuk Monitoring Cuti
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
@@ -71,7 +72,7 @@ Route::middleware(['auth', 'force.password'])->group(function () {
     Route::get('/atasan/antrean-approval', [ApprovalController::class, 'index'])->name('atasan.approval');
     Route::post('/atasan/antrean-approval/{id}', [ApprovalController::class, 'process'])->name('atasan.approval.process');
 
-    // ---> RUTE QUICK APPROVE (SUDAH DIPINDAHKAN KE DALAM SINI) <---
+    // ---> RUTE QUICK APPROVE <---
     Route::post('/atasan/approval/{id}/approve', [ApprovalController::class, 'approve'])->name('atasan.approval.approve');
     Route::post('/atasan/approval/{id}/reject', [ApprovalController::class, 'reject'])->name('atasan.approval.reject');
 
@@ -84,6 +85,12 @@ Route::middleware(['auth', 'force.password'])->group(function () {
     Route::get('/admin/pegawai', [AdminController::class, 'kelolaPegawai'])->name('admin.pegawai');
     Route::get('/admin/saldo-cuti', [AdminController::class, 'kelolaSaldo'])->name('admin.saldo');
     Route::post('/admin/saldo-cuti/{id}', [AdminController::class, 'updateSaldo'])->name('admin.saldo.update');
+
+    // <--- TAMBAHAN: Rute Monitoring Cuti, diletakkan sebelum Rekap Laporan
+    //      sesuai urutan menu di sidebar (MainLayout.vue) --->
+    Route::get('/admin/monitoring', [MonitoringCutiController::class, 'index'])->name('admin.monitoring');
+    Route::get('/admin/monitoring/export', [MonitoringCutiController::class, 'export'])->name('admin.monitoring.export');
+
     Route::get('/admin/rekap-laporan', [AdminController::class, 'rekapLaporan'])->name('admin.rekap');
     Route::get('/admin/rekap-laporan/export', [AdminController::class, 'exportExcel'])->name('admin.rekap.export');
     Route::post('/admin/pengajuan-cuti/{id}/tangguhkan', [AdminController::class, 'suspendCuti'])->name('admin.cuti.tangguhkan');

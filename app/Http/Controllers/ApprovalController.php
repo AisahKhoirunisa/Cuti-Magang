@@ -13,8 +13,8 @@ use Illuminate\Support\Facades\Auth;
 
 class ApprovalController extends Controller
 {
-    // 1. Menampilkan Daftar Antrean
-    public function index()
+    // 1. Menampilkan Daftar Antrean (dengan search & filter jenis cuti)
+    public function index(Request $request)
     {
         $user = Auth::user();
         $query = PengajuanCuti::with('pegawai');
@@ -30,14 +30,33 @@ class ApprovalController extends Controller
             $query->where('status', 'menunggu_l3');
         } elseif ($user->role_id === 6) { // L4 (Kepala Biro Perencanaan - ROLE 6)
             $query->where('status', 'menunggu_l4');
+        } elseif ($user->role_id === 5) { // Admin HR - mode monitoring, lihat semua tahap yang masih berjalan
+            $query->whereIn('status', ['menunggu_l1', 'menunggu_l2', 'menunggu_l3', 'menunggu_l4']);
         } else {
             $query->where('id', 0); // Cegah role lain melihat antrean
         }
 
-        $antrean = $query->orderBy('created_at', 'asc')->get();
+        // Fitur pencarian nama / NIP pegawai
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->whereHas('pegawai', function ($q) use ($search) {
+                $q->where('nama', 'like', '%' . $search . '%')
+                    ->orWhere('nip', 'like', '%' . $search . '%');
+            });
+        }
+
+        // Fitur filter jenis cuti
+        if ($request->filled('jenis_cuti') && $request->jenis_cuti !== 'Semua Jenis Cuti') {
+            $query->where('jenis_cuti', $request->jenis_cuti);
+        }
+
+        $antrean = $query->orderBy('created_at', 'asc')
+            ->paginate(10)
+            ->withQueryString();
 
         return Inertia::render('Atasan/AntreanApproval', [
-            'antrean' => $antrean
+            'antrean' => $antrean,
+            'filters' => $request->only(['search', 'jenis_cuti']),
         ]);
     }
 
@@ -191,6 +210,16 @@ class ApprovalController extends Controller
             // Hapus notifikasi lama milik L4
             Notifikasi::where('pegawai_id', $user->id)->where('judul', 'Pengajuan Cuti Baru')->delete();
 
+            if ($this->isCutiTahunan($pengajuan->jenis_cuti)) {
+                $saldo = SaldoCuti::where('pegawai_id', $targetUserId)
+                    ->where('tahun', date('Y', strtotime($pengajuan->tanggal_mulai)))
+                    ->first();
+
+                if (!$saldo || $saldo->sisa < $pengajuan->jumlah_hari) {
+                    return back()->with('error', 'Saldo Cuti Tahunan tidak mencukupi untuk menyetujui pengajuan ini.');
+                }
+            }
+
             // L4 Setuju -> Status FINAL (Disetujui)
             $pengajuan->update([
                 'status' => 'disetujui',
@@ -200,10 +229,7 @@ class ApprovalController extends Controller
 
             // Potong saldo HANYA untuk jenis cuti tahunan (Dieksekusi di akhir/final)
             if ($this->isCutiTahunan($pengajuan->jenis_cuti)) {
-                $saldo = SaldoCuti::where('pegawai_id', $targetUserId)->where('tahun', date('Y', strtotime($pengajuan->tanggal_mulai)))->first();
-                if ($saldo) {
-                    $saldo->decrement('sisa', $pengajuan->jumlah_hari);
-                }
+                $saldo->decrement('sisa', $pengajuan->jumlah_hari);
             }
 
             $statusPesan = 'Disetujui Kepala Biro Perencanaan (L4)';

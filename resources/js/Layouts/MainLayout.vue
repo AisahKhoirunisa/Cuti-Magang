@@ -236,8 +236,8 @@ const hapusNotifikasi = (id) => {
                     </Link>
                 </div>
 
-                <!-- PERUBAHAN: Menambahkan Role 6 (L4) agar bisa melihat menu Approval -->
-                <div v-if="[2, 3, 4, 6].includes(user.role_id)">
+                <!-- PERUBAHAN: Menambahkan Role 6 (L4) dan Role 5 (Admin HR) agar bisa melihat menu Approval -->
+                <div v-if="[2, 3, 4, 5, 6].includes(user.role_id)">
                     <p
                         v-show="isSidebarOpen"
                         class="px-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 mt-6"
@@ -312,10 +312,45 @@ const hapusNotifikasi = (id) => {
                         HR Admin
                     </p>
                     <Link
+                        :href="route('admin.monitoring')"
+                        :title="!isSidebarOpen ? 'Monitoring Cuti' : ''"
+                        :class="[
+                            'flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium text-sm transition-all duration-300',
+                            isActive('admin.monitoring')
+                                ? 'bg-gradient-to-r from-green-500 to-green-600 text-white shadow-lg shadow-green-500/30 border border-green-400/20'
+                                : 'text-slate-400 hover:bg-slate-800/50 hover:text-white',
+                            !isSidebarOpen ? 'justify-center' : '',
+                        ]"
+                    >
+                        <!-- Ikon Mata (Monitor) -->
+                        <svg
+                            class="w-5 h-5 shrink-0"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                            ></path>
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                            ></path>
+                        </svg>
+                        <span v-show="isSidebarOpen" class="truncate"
+                            >Monitoring Cuti</span
+                        >
+                    </Link>
+                    <Link
                         :href="route('admin.rekap')"
                         :title="!isSidebarOpen ? 'Rekap Laporan' : ''"
                         :class="[
-                            'flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium text-sm transition-all duration-300',
+                            'flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium text-sm transition-all duration-300 mt-1',
                             isActive('admin.rekap')
                                 ? 'bg-gradient-to-r from-green-500 to-green-600 text-white shadow-lg shadow-green-500/30 border border-green-400/20'
                                 : 'text-slate-400 hover:bg-slate-800/50 hover:text-white',

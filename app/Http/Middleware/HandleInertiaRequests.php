@@ -44,13 +44,16 @@ class HandleInertiaRequests extends Middleware
             ...parent::share($request),
             'auth' => [
                 'user' => $user ? [
-                    'id'          => $user->id,
-                    'nip'         => $user->nip,
-                    'nama'        => $user->nama,
-                    'role_id'     => $user->role_id,
-                    'foto_profil' => $user->foto_profil,
-                    'jabatan'     => $user->jabatan,
-                    'departemen'  => $user->departemen,
+                    'id'                 => $user->id,
+                    'nip'                => $user->nip,
+                    'nama'               => $user->nama,
+                    'role_id'            => $user->role_id,
+                    'foto_profil'        => $user->foto_profil,
+                    'jabatan'            => $user->jabatan,
+                    'departemen'         => $user->departemen,
+                    'alamat_domisili'    => $user->alamat_domisili, // <-- FIX: kolom ini hilang, menyebabkan alamat tidak muncul setelah refresh
+                    'kelompok_substansi' => $user->kelompok_substansi, // <-- Ditambahkan agar konsisten dengan tampilan di Profile Edit
+                    'tim_kerja'          => $user->tim_kerja, // <-- Ditambahkan agar konsisten dengan tampilan di Profile Edit
                 ] : null,
             ],
             // TAMBAHAN: Flash message untuk mendukung pop-up session (sukses/error)

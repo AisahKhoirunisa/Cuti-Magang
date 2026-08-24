@@ -9,8 +9,6 @@ class Pegawai extends Authenticatable
 {
     use Notifiable;
 
-    protected $guarded = ['id'];
-
     protected $hidden = [
         'password',
     ];
