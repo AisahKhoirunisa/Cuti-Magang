@@ -87,6 +87,23 @@ const goToPage = (url) => {
         },
     );
 };
+
+// ================= MODAL DETAIL CUTI (Khusus Admin HR / Read-Only) =================
+// Menggantikan badge "Monitor" polos dengan tombol pill "Detail Cuti" yang
+// membuka modal berisi rincian lengkap pengajuan, supaya Admin HR tetap bisa
+// melihat detail walau tidak bisa Setujui/Tolak.
+const detailModal = ref({ show: false, data: null });
+
+const bukaDetailModal = (item) => {
+    detailModal.value.data = item;
+    detailModal.value.show = true;
+};
+
+const closeDetailModal = () => {
+    detailModal.value.show = false;
+    detailModal.value.data = null;
+};
+// ================= END MODAL DETAIL CUTI =================
 </script>
 
 <template>
@@ -115,9 +132,7 @@ const goToPage = (url) => {
                         <option value="Cuti Alasan Penting">
                             Cuti Alasan Penting
                         </option>
-                        <option value="Cuti Melahirkan">
-                            Cuti Melahirkan
-                        </option>
+                        <option value="Cuti Melahirkan">Cuti Melahirkan</option>
                     </select>
 
                     <!-- Input Pencarian -->
@@ -240,10 +255,30 @@ const goToPage = (url) => {
                             >
                                 {{ item.jumlah_hari }} Hari
                             </td>
-                            <td
-                                class="px-6 py-4 whitespace-nowrap text-sm font-medium text-amber-700"
-                            >
-                                {{ statusLabels[item.status] || item.status }}
+                            <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                <!-- <-- DIUBAH: teks polos -> badge berwarna dinamis
+                                     mengikuti kategori status, konsisten dengan
+                                     gaya badge di halaman Riwayat Pengajuan. -->
+                                <span
+                                    class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium"
+                                    :class="{
+                                        'bg-yellow-100 text-yellow-800':
+                                            item.status?.includes('menunggu'),
+                                        'bg-green-100 text-green-800':
+                                            item.status === 'disetujui',
+                                        'bg-red-100 text-red-800':
+                                            item.status === 'ditolak' ||
+                                            item.status?.includes('dibatalkan'),
+                                        'bg-orange-100 text-orange-800':
+                                            item.status === 'ditangguhkan',
+                                        'bg-gray-100 text-gray-800':
+                                            !item.status,
+                                    }"
+                                >
+                                    {{
+                                        statusLabels[item.status] || item.status
+                                    }}
+                                </span>
                             </td>
                             <td
                                 class="px-6 py-4 text-sm text-gray-500 max-w-xs truncate"
@@ -256,24 +291,50 @@ const goToPage = (url) => {
                             >
                                 <template v-if="!isReadOnly">
                                     <button
-                                        @click="processApproval(item.id, 'approve')"
+                                        @click="
+                                            processApproval(item.id, 'approve')
+                                        "
                                         class="inline-flex items-center px-3 py-1 bg-green-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-green-700 transition ease-in-out duration-150"
                                     >
                                         Setujui
                                     </button>
                                     <button
-                                        @click="processApproval(item.id, 'reject')"
+                                        @click="
+                                            processApproval(item.id, 'reject')
+                                        "
                                         class="inline-flex items-center px-3 py-1 bg-red-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-red-700 transition ease-in-out duration-150"
                                     >
                                         Tolak
                                     </button>
                                 </template>
-                                <span
+                                <!-- <-- DIGANTI: badge "Monitor" polos -> tombol pill "Detail Cuti"
+                                     yang membuka modal rincian pengajuan (khusus Admin HR). -->
+                                <button
                                     v-else
-                                    class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-500"
+                                    @click="bukaDetailModal(item)"
+                                    class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-full text-xs font-medium text-gray-700 hover:bg-gray-50 hover:text-blue-600 transition-colors shadow-sm"
                                 >
-                                    Monitor
-                                </span>
+                                    <svg
+                                        class="w-3.5 h-3.5"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                                        />
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                                        />
+                                    </svg>
+                                    Detail Cuti
+                                </button>
                             </td>
                         </tr>
                         <tr v-if="antrean.data.length === 0">
@@ -296,7 +357,9 @@ const goToPage = (url) => {
                 class="flex flex-wrap items-center justify-between gap-2 mt-6"
             >
                 <p class="text-sm text-gray-500">
-                    Menampilkan {{ antrean.from ?? 0 }}–{{ antrean.to ?? 0 }}
+                    Menampilkan {{ antrean.from ?? 0 }}–{{
+                        antrean.to ?? 0
+                    }}
                     dari {{ antrean.total ?? 0 }} data
                 </p>
                 <div class="flex flex-wrap gap-1">
@@ -320,4 +383,203 @@ const goToPage = (url) => {
             </div>
         </div>
     </MainLayout>
+
+    <!-- ================= MODAL DETAIL CUTI (Khusus Admin HR) =================
+         Overlay + card sederhana mengikuti gaya halaman ini (border-gray-200,
+         rounded-lg), bukan gaya glassmorphism yang dipakai di Dashboard.vue,
+         supaya tampilan tetap konsisten satu halaman. Klik area gelap di luar
+         kotak modal akan menutup modal (@click.self). -->
+    <Teleport to="body">
+        <div
+            v-if="detailModal.show"
+            class="fixed inset-0 z-[9999] flex items-center justify-center bg-gray-900/40 p-4"
+            @click.self="closeDetailModal"
+        >
+            <div
+                class="bg-white rounded-xl shadow-xl border border-gray-200 max-w-lg w-full overflow-hidden"
+            >
+                <div
+                    class="px-6 py-4 border-b border-gray-100 flex items-center justify-between"
+                >
+                    <h3 class="text-lg font-bold text-gray-800">
+                        Detail Pengajuan Cuti
+                    </h3>
+                    <button
+                        type="button"
+                        @click="closeDetailModal"
+                        class="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-1.5 rounded-full transition"
+                    >
+                        <svg
+                            class="w-5 h-5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12"
+                            />
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="p-6 space-y-4" v-if="detailModal.data">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-bold text-gray-900">
+                                {{ detailModal.data.pegawai?.nama }}
+                            </p>
+                            <p class="text-xs text-gray-500">
+                                {{ detailModal.data.pegawai?.departemen }}
+                            </p>
+                        </div>
+                        <span
+                            class="px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-100"
+                        >
+                            {{
+                                statusLabels[detailModal.data.status] ||
+                                detailModal.data.status
+                            }}
+                        </span>
+                    </div>
+
+                    <!-- <-- TAMBAHAN: NIP & Jabatan (field yang sudah pasti ada di
+                         relasi pegawai, lihat ProfileController.php & Dashboard.vue) -->
+                    <div class="grid grid-cols-2 gap-4">
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100"
+                        >
+                            <p
+                                class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1"
+                            >
+                                NIP
+                            </p>
+                            <p class="text-sm font-semibold text-gray-700">
+                                {{ detailModal.data.pegawai?.nip || "-" }}
+                            </p>
+                        </div>
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100"
+                        >
+                            <p
+                                class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1"
+                            >
+                                Jabatan
+                            </p>
+                            <p class="text-sm font-semibold text-gray-700">
+                                {{ detailModal.data.pegawai?.jabatan || "-" }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100"
+                        >
+                            <p
+                                class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1"
+                            >
+                                Tanggal Mulai
+                            </p>
+                            <p class="text-sm font-semibold text-gray-700">
+                                {{ formatDate(detailModal.data.tanggal_mulai) }}
+                            </p>
+                        </div>
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100"
+                        >
+                            <p
+                                class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1"
+                            >
+                                Tanggal Selesai
+                            </p>
+                            <p class="text-sm font-semibold text-gray-700">
+                                {{
+                                    formatDate(detailModal.data.tanggal_selesai)
+                                }}
+                            </p>
+                        </div>
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100"
+                        >
+                            <p
+                                class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1"
+                            >
+                                Jenis Cuti
+                            </p>
+                            <p class="text-sm font-semibold text-blue-600">
+                                {{ detailModal.data.jenis_cuti }}
+                            </p>
+                        </div>
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100"
+                        >
+                            <p
+                                class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1"
+                            >
+                                Durasi
+                            </p>
+                            <p class="text-sm font-semibold text-gray-700">
+                                {{ detailModal.data.jumlah_hari }} Hari
+                            </p>
+                        </div>
+                    </div>
+
+                    <div>
+                        <p
+                            class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5"
+                        >
+                            Keterangan / Alasan Cuti
+                        </p>
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100 text-sm text-gray-600"
+                        >
+                            {{ detailModal.data.keterangan || "-" }}
+                        </div>
+                    </div>
+
+                    <!-- <-- TAMBAHAN: Alamat Selama Cuti. Nama kolom di database belum
+                         terkonfirmasi persis (mengikuti field "Alamat Selama Cuti" di
+                         form AjukanCuti.vue), jadi dicoba beberapa kemungkinan nama
+                         kolom sekaligus. Kalau semuanya tetap tampil "-", cek nama
+                         kolom aslinya di migration/model PengajuanCuti lalu sesuaikan. -->
+                    <div
+                        v-if="
+                            detailModal.data.alamat_selama_cuti ||
+                            detailModal.data.alamat_cuti
+                        "
+                    >
+                        <p
+                            class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5"
+                        >
+                            Alamat Selama Cuti
+                        </p>
+                        <div
+                            class="p-3 bg-gray-50 rounded-lg border border-gray-100 text-sm text-gray-600"
+                        >
+                            {{
+                                detailModal.data.alamat_selama_cuti ||
+                                detailModal.data.alamat_cuti ||
+                                "-"
+                            }}
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    class="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end"
+                >
+                    <button
+                        type="button"
+                        @click="closeDetailModal"
+                        class="px-5 py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-lg text-sm font-semibold transition"
+                    >
+                        Tutup
+                    </button>
+                </div>
+            </div>
+        </div>
+    </Teleport>
 </template>
