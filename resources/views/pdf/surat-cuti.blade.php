@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="id">
 
+
 <head>
     <meta charset="UTF-8">
     <title>Surat Persetujuan Cuti - {{ $pegawai->nama }}</title>
@@ -13,6 +14,7 @@
             color: #000;
         }
 
+
         .title {
             text-align: center;
             font-weight: bold;
@@ -21,10 +23,12 @@
             text-decoration: underline;
         }
 
+
         .content {
             margin-top: 20px;
             text-align: justify;
         }
+
 
         .table-info {
             width: 100%;
@@ -33,25 +37,30 @@
             border-collapse: collapse;
         }
 
+
         .table-info td {
             padding: 4px 0;
             vertical-align: top;
         }
 
+
         .table-info td:first-child {
             width: 25%;
         }
+
 
         .table-info td:nth-child(2) {
             width: 3%;
             text-align: center;
         }
 
+
         .status-box {
             font-weight: bold;
             margin-top: 15px;
             margin-bottom: 15px;
         }
+
 
         .signature-table {
             width: 100%;
@@ -60,16 +69,19 @@
             border-collapse: collapse;
         }
 
+
         .signature-table td {
             width: 50%;
             padding: 5px;
             vertical-align: bottom;
         }
 
+
         .signature-date {
             text-align: center;
             margin-bottom: 10px;
         }
+
 
         .signature-name {
             text-decoration: underline;
@@ -79,12 +91,16 @@
     </style>
 </head>
 
+
 <body>
+
 
     <div class="title">LEMBAR PERSETUJUAN CUTI</div>
 
+
     <div class="content">
         <p>Berdasarkan permohonan cuti yang telah diajukan melalui sistem kepegawaian, dengan ini disampaikan bahwa:</p>
+
 
         <table class="table-info">
             <tr>
@@ -128,35 +144,53 @@
             </tr>
         </table>
 
+
         <div class="status-box">
             Status Permohonan : DISETUJUI
         </div>
 
+
         <p>Pegawai yang bersangkutan diberikan izin untuk melaksanakan cuti pada periode tersebut sesuai ketentuan peraturan perundang-undangan.</p>
     </div>
 
-    <!-- LOGIKA BARU: Tarik data L3 dan L4 langsung dari database untuk semua pengajuan -->
+
+    <!-- Tarik data L3 dan L4 langsung dari database untuk semua pengajuan -->
     @php
     $kasubag = \App\Models\Pegawai::where('jabatan', 'Kepala Subbagian Tata Usaha')->first();
     $kabiro = \App\Models\Pegawai::where('jabatan', 'Kepala Biro Perencanaan')->first();
     @endphp
 
+
     <table class="signature-table">
         <tr>
-            <!-- Kolom Kiri: Atasan Langsung (TERKUNCI UNTUK L3) -->
+            <!-- Kolom Kiri: Atasan Langsung (L3 - Kasubag TU) -->
             <td>
                 <br>
                 Atasan Langsung,<br>
                 Kepala Subbagian Tata Usaha
 
+
+                <!-- AREA GAMBAR TANDA TANGAN L3 -->
+                <div style="height: 70px; margin: 10px 0;">
+                    @if($kasubag && !empty($kasubag->signature_path) && file_exists(public_path('storage/' . $kasubag->signature_path)))
+                    <img src="{{ public_path('storage/' . $kasubag->signature_path) }}" style="height: 70px; width: 140px; object-fit: contain;">
+                    @elseif(file_exists(public_path('storage/signatures/kasubag.png')))
+                    <img src="{{ public_path('storage/signatures/kasubag.png') }}" style="height: 70px; width: 140px; object-fit: contain;">
+                    @else
+                    <!-- Jika file benar-benar tidak ada, kosongkan saja atau berikan teks pengganti -->
+                    <span style="font-size: 10pt; color: #555; font-style: italic;">(Tanda Tangan)</span>
+                    @endif
+                </div>
+
+
                 <div class="signature-name">
-                    <!-- Menampilkan nama Kasubag otomatis dari database, atau fallback manual jika kosong -->
                     {{ $kasubag ? strtoupper($kasubag->nama) : 'IGNATIUS AGUS HENDARTO, S.E., M.M.' }}
                 </div>
                 NIP. {{ $kasubag ? $kasubag->nip : '777666555' }}
             </td>
 
-            <!-- Kolom Kanan: Pejabat Berwenang (TERKUNCI UNTUK L4) -->
+
+            <!-- Kolom Kanan: Pejabat Berwenang (L4 - Kepala Biro Perencanaan) -->
             <td>
                 <div class="signature-date">
                     Jakarta, {{ \Carbon\Carbon::now()->locale('id')->translatedFormat('d F Y') }}
@@ -165,8 +199,20 @@
                 Pejabat Yang Berwenang Memberikan Cuti<br>
                 Kepala Biro Perencanaan
 
+
+                <!-- AREA GAMBAR TANDA TANGAN L4 -->
+                <div style="height: 70px; margin: 10px 0;">
+                    @if($kabiro && file_exists(public_path('storage/' . $kabiro->signature_path)))
+                    <!-- Jika ada gambar di database -->
+                    <img src="{{ public_path('storage/' . $kabiro->signature_path) }}" style="height: 70px; width: 140px; object-fit: contain;">
+                    @else
+                    <!-- Fallback / Gambar Default Statis -->
+                    <img src="{{ public_path('storage/signatures/kabiro.png') }}" style="height: 70px; width: 140px; object-fit: contain;">
+                    @endif
+                </div>
+
+
                 <div class="signature-name">
-                    <!-- Menampilkan nama Kabiro otomatis dari database, atau fallback manual jika kosong -->
                     {{ $kabiro ? strtoupper($kabiro->nama) : 'SETA RUKMALASARI AGUSTINA, S.P., M.M.A., M.Sc.' }}
                 </div>
                 NIP. {{ $kabiro ? $kabiro->nip : '666555444' }}
@@ -174,6 +220,8 @@
         </tr>
     </table>
 
+
 </body>
+
 
 </html>

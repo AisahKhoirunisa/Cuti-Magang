@@ -1,23 +1,22 @@
 <?php
 
-
 namespace App\Http\Controllers;
-
 
 use App\Models\Pegawai;
 use App\Models\PengajuanCuti;
 use App\Models\SaldoCuti;
 use App\Models\HariLibur;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Inertia\Inertia;
 use Carbon\Carbon;
-
 
 class DashboardController extends Controller
 {
     public function index()
     {
-        $user = auth()->user();
+        /** @var \App\Models\Pegawai $user */
+        $user = Auth::user();
         $tahun = date('Y');
         $stats = [];
         $recentCuti = [];
@@ -31,16 +30,13 @@ class DashboardController extends Controller
         // Sesuaikan angka ini kalau ternyata role_id Admin HR berbeda, Aisah.
         $isAdminHR = $user->role_id === 5;
 
-
         // 1. Tarik Data Hari Libur Secara Global
         $hariLiburs = HariLibur::where('tanggal', '>=', Carbon::today()->toDateString())
             ->orderBy('tanggal', 'asc')
             ->get();
 
-
         // 2. Inisialisasi default array 12 bulan (berisi angka 0) untuk grafik
         $chartDataBackend = array_fill(0, 12, 0);
-
 
         if ($user->role_id === 1) {
             // ==========================================
@@ -71,14 +67,12 @@ class DashboardController extends Controller
                 'disetujui' => PengajuanCuti::where('pegawai_id', $user->id)->where('status', 'disetujui')->count(),
             ];
 
-
             // Tabel Karyawan
             $recentCuti = PengajuanCuti::with(['atasanL1', 'atasanL3', 'atasanL4', 'approvalLogs'])
                 ->where('pegawai_id', $user->id)
                 ->orderBy('created_at', 'desc')
                 ->take(5)
                 ->get();
-
 
             // Data UTUH untuk Grafik, Modal, dan Kalender
             $allCutiDisetujui = PengajuanCuti::with(['atasanL1', 'atasanL3', 'atasanL4', 'approvalLogs'])
@@ -97,7 +91,6 @@ class DashboardController extends Controller
                 6 => 'menunggu_l4',
             ][$user->role_id] ?? null;
 
-
             $antreanQuery = $targetStatus
                 ? PengajuanCuti::where('status', $targetStatus)
                 : PengajuanCuti::where('status', 'like', 'menunggu%');
@@ -107,15 +100,12 @@ class DashboardController extends Controller
                 });
             }
 
-
             $anggotaTimQuery = Pegawai::where('role_id', 1);
             if ($user->role_id !== 5) {
                 $anggotaTimQuery->where('departemen', $user->departemen);
             }
 
-
             $anggotaTim = $anggotaTimQuery->get();
-
 
             $saldoAtasan = null;
             if (in_array($user->role_id, [2, 3, 4, 6], true)) {
@@ -156,7 +146,6 @@ class DashboardController extends Controller
                 'total_anggota_tim' => $anggotaTimQuery->count(),
             ];
 
-
             // Tabel Atasan: Smart Sorting (Maks 5)
             $recentCuti = PengajuanCuti::with(['pegawai', 'atasanL1', 'atasanL3', 'atasanL4', 'approvalLogs'])
                 ->when($user->role_id !== 5, function ($query) use ($user) {
@@ -171,7 +160,6 @@ class DashboardController extends Controller
                 ->take(5)
                 ->get();
 
-
             // Data UTUH untuk Grafik, Modal, dan Kalender (Tidak dibatasi 5)
             $allCutiDisetujui = PengajuanCuti::with(['pegawai', 'atasanL1', 'atasanL3', 'atasanL4', 'approvalLogs'])
                 ->when($user->role_id !== 5, function ($query) use ($user) {
@@ -182,7 +170,6 @@ class DashboardController extends Controller
                 ->where('status', 'disetujui')
                 ->whereYear('tanggal_mulai', $tahun)
                 ->get();
-
 
             // <--- QUERY TIM CUTI HARI INI (BARU) --->
             $timCutiHariIni = PengajuanCuti::with(['pegawai', 'atasanL1', 'atasanL3', 'atasanL4', 'approvalLogs'])
@@ -197,13 +184,11 @@ class DashboardController extends Controller
                 ->get();
         }
 
-
         // Loop untuk memetakan data grafik menggunakan data utuh
         foreach ($allCutiDisetujui as $cuti) {
             $monthIndex = (int) date('n', strtotime($cuti->tanggal_mulai)) - 1;
             $chartDataBackend[$monthIndex] += $cuti->jumlah_hari;
         }
-
 
         return Inertia::render('Dashboard', [
             'stats' => $stats,

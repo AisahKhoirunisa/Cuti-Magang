@@ -77,7 +77,7 @@ const calendarDays = computed(() => {
     for (let i = 1; i <= totalDays; i++) {
         const formattedMonth = String(month + 1).padStart(2, "0");
         const formattedDay = String(i).padStart(2, "0");
-        const dateStr = `${year}-${formattedMonth}-${formattedDay}`;
+        const dateStr = `year-{formattedMonth}-${formattedDay}`;
 
         days.push({
             dateString: dateStr,
@@ -98,6 +98,38 @@ const getCutiOnDate = (dateStr) => {
     return props.cutiTim.filter((item) => {
         return dateStr >= item.tanggal_mulai && dateStr <= item.tanggal_selesai;
     });
+};
+
+const getJenisCuti = (cuti) => (cuti?.jenis_cuti || "Cuti Tahunan").trim();
+
+const getCutiColor = (cuti) => {
+    switch (getJenisCuti(cuti).toLowerCase()) {
+        case "cuti melahirkan":
+            return {
+                container: "bg-rose-50 border-rose-200 text-rose-800",
+                dot: "bg-rose-500",
+                label: "text-rose-400",
+            };
+        case "cuti besar":
+            return {
+                container: "bg-blue-50 border-blue-200 text-blue-800",
+                dot: "bg-blue-500",
+                label: "text-blue-400",
+            };
+        case "cuti alasan penting":
+        case "cuti_alasan_penting":
+            return {
+                container: "bg-amber-50 border-amber-200 text-amber-800",
+                dot: "bg-amber-500",
+                label: "text-amber-400",
+            };
+        default:
+            return {
+                container: "bg-green-50 border-green-200 text-green-800",
+                dot: "bg-green-500",
+                label: "text-green-400",
+            };
+    }
 };
 
 // MODAL DATA
@@ -272,18 +304,45 @@ const closeModal = () => {
                                 :key="cuti.id"
                             >
                                 <div
-                                    class="bg-green-50 border border-green-200 text-green-800 text-[11px] font-medium px-2 py-1 rounded-md truncate shadow-sm flex items-center gap-1"
+                                    class="border text-[11px] font-medium px-2 py-1 rounded-md truncate shadow-sm flex items-center gap-1"
+                                    :class="getCutiColor(cuti).container"
+                                    :title="`${cuti.pegawai?.nama || 'Pegawai'} - ${getJenisCuti(cuti)}`"
                                 >
                                     <span
-                                        class="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0"
+                                        class="w-1.5 h-1.5 rounded-full shrink-0"
+                                        :class="getCutiColor(cuti).dot"
                                     ></span>
-                                    <span class="truncate">{{
-                                        cuti.pegawai?.nama || "Pegawai"
-                                    }}</span>
+                                    <span class="truncate">
+                                        {{ cuti.pegawai?.nama || "Pegawai" }}
+                                        <span class="font-bold"
+                                            >({{ getJenisCuti(cuti) }})</span
+                                        >
+                                    </span>
                                 </div>
                             </template>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <div
+                class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] font-semibold text-slate-600"
+            >
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-sm bg-green-500"></span>
+                    Cuti Tahunan
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-sm bg-rose-500"></span>
+                    Cuti Melahirkan
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-sm bg-blue-500"></span>
+                    Cuti Besar
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-sm bg-amber-500"></span>
+                    Cuti Alasan Penting
                 </div>
             </div>
         </div>
@@ -383,22 +442,18 @@ const closeModal = () => {
 
                                 <!-- TAMBAHAN: BLOK JENIS CUTI -->
                                 <div
-                                    class="bg-indigo-50 border border-indigo-100 p-3 rounded-xl"
+                                    class="border p-3 rounded-xl"
+                                    :class="getCutiColor(item).container"
                                 >
                                     <p
-                                        class="text-[10px] font-bold text-indigo-400 uppercase tracking-wider mb-0.5"
+                                        class="text-[10px] font-bold uppercase tracking-wider mb-0.5"
+                                        :class="getCutiColor(item).label"
                                     >
                                         Jenis Cuti
                                     </p>
-                                    <p
-                                        class="text-sm font-extrabold text-indigo-700"
-                                    >
+                                    <p class="text-sm font-extrabold">
                                         <!-- Mengambil data jenis_cuti, jika kosong otomatis mencetak "Cuti Tahunan" -->
-                                        {{
-                                            item.jenis_cuti
-                                                ? item.jenis_cuti
-                                                : "Cuti Tahunan"
-                                        }}
+                                        {{ getJenisCuti(item) }}
                                     </p>
                                 </div>
 

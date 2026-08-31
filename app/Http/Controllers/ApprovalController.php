@@ -13,27 +13,66 @@ use Illuminate\Support\Facades\Auth;
 
 class ApprovalController extends Controller
 {
-    // 1. Menampilkan Daftar Antrean (dengan search & filter jenis cuti)
+    // 1. Menampilkan Daftar Antrean — sekarang berfungsi sebagai Pemantau
+    //    Seluruh Transaksi (bisa melihat semua aksi: menunggu, disetujui,
+    //    ditolak, ditangguhkan, dll), dengan search & filter jenis cuti + status.
     public function index(Request $request)
     {
         $user = Auth::user();
-        $query = PengajuanCuti::with('pegawai');
+        // Relasi 'saldoCutiTahunIni' tetap dipertahankan agar sisa cuti terbawa ke frontend
+        $query = PengajuanCuti::with(['pegawai.saldoCutiTahunIni']);
 
-        if ($user->role_id === 2) { // L1 (Ketua Tim)
-            $query->where('status', 'menunggu_l1')
-                ->whereHas('pegawai', function ($q) use ($user) {
-                    $q->where('departemen', $user->departemen);
+        // --- BATASAN WILAYAH (bukan lagi batasan status) ---
+        // Kunci hardcode status 'menunggu_lX' per role sudah DIHAPUS supaya
+        // halaman ini bisa menampilkan semua aksi transaksi, bukan cuma yang
+        // masih menunggu. Yang tersisa hanya batasan wilayah/akses:
+        if ($user->role_id === 2) {
+            // L1 (Ketua Tim): hanya bisa melihat pengajuan di departemennya saja
+            $query->whereHas('pegawai', function ($q) use ($user) {
+                $q->where('departemen', $user->departemen);
+            });
+        } elseif (!in_array($user->role_id, [3, 4, 5, 6])) {
+            // Jika bukan L1, L2, L3, L4, atau Admin HR -> blokir aksesnya
+            $query->where('id', 0);
+        }
+        // Catatan: L2, L3, L4, dan Admin HR (role 5) bebas melihat skala biro/pusat.
+
+        // Fitur filter status dari dropdown Vue yang disempurnakan
+        // PERBAIKAN LANJUTAN: filter jenis_cuti dan status kini eksplisit
+        // mengabaikan string placeholder "Semua Jenis Cuti"/"Semua Status"
+        // maupun string kosong, supaya tidak pernah mencari baris dengan
+        // nilai kolom yang memang tidak ada di database (yang membuat
+        // tabel tampak kosong padahal datanya ada).
+        if ($request->filled('status') && $request->status !== '' && $request->status !== 'Semua Status') {
+            $stVal = $request->status;
+            if ($stVal === 'ditangguhkan') {
+                // PERBAIKAN: sebelumnya orWhere('keterangan', 'like', '%ditangguhkan%')
+                // berdiri sendiri di level teratas, sehingga baris yang statusnya
+                // MASIH 'menunggu_lX' tapi kebetulan keterangannya membawa kata
+                // "ditangguhkan" (mis. dari teks pengajuan cuti ulang) ikut lolos
+                // dan tampil sebagai "Menunggu ..." padahal filter yang dipilih
+                // adalah "Ditangguhkan". Sekarang syarat keterangan HANYA berlaku
+                // ketika status memang 'ditolak' (dibungkus sub-closure sendiri),
+                // sehingga status menunggu_l1/l2/l3/l4 tidak pernah ikut ke-match.
+                $query->where(function ($sub) {
+                    $sub->where('status', 'ditangguhkan')
+                        ->orWhere('status', 'dibatalkan_ditangguhkan')
+                        ->orWhere(function ($ditolakDitangguhkan) {
+                            $ditolakDitangguhkan->where('status', 'ditolak')
+                                ->where(function ($k) {
+                                    $k->where('keterangan', 'like', '%Ditangguhkan%')
+                                        ->orWhere('keterangan', 'like', '%ditangguhkan%');
+                                });
+                        });
                 });
-        } elseif ($user->role_id === 3) { // L2 (Ketua Kelompok)
-            $query->where('status', 'menunggu_l2');
-        } elseif ($user->role_id === 4) { // L3 (Kasubag TU)
-            $query->where('status', 'menunggu_l3');
-        } elseif ($user->role_id === 6) { // L4 (Kepala Biro Perencanaan - ROLE 6)
-            $query->where('status', 'menunggu_l4');
-        } elseif ($user->role_id === 5) { // Admin HR - mode monitoring, lihat semua tahap yang masih berjalan
-            $query->whereIn('status', ['menunggu_l1', 'menunggu_l2', 'menunggu_l3', 'menunggu_l4']);
-        } else {
-            $query->where('id', 0); // Cegah role lain melihat antrean
+            } elseif ($stVal === 'ditolak') {
+                // Hanya ambil yang ditolak murni (tidak mengandung kata tangguh)
+                $query->where('status', 'ditolak')
+                    ->where('keterangan', 'not like', '%Ditangguhkan%')
+                    ->where('keterangan', 'not like', '%ditangguhkan%');
+            } else {
+                $query->where('status', $stVal);
+            }
         }
 
         // Fitur pencarian nama / NIP pegawai
@@ -45,22 +84,49 @@ class ApprovalController extends Controller
             });
         }
 
-        // Fitur filter jenis cuti
-        if ($request->filled('jenis_cuti') && $request->jenis_cuti !== 'Semua Jenis Cuti') {
+        // Fitur filter jenis cuti yang aman dari string "Semua Jenis Cuti"
+        if ($request->filled('jenis_cuti') && $request->jenis_cuti !== '' && $request->jenis_cuti !== 'Semua Jenis Cuti') {
             $query->where('jenis_cuti', $request->jenis_cuti);
         }
 
-        $antrean = $query->orderBy('created_at', 'asc')
+        // Pengurutan data terbaru di paling atas
+        $antrean = $query->orderBy('created_at', 'desc')
             ->paginate(10)
             ->withQueryString();
 
+        // Hitung sisa cuti dinamis (sama persis logika Dashboard) untuk setiap item
+        $tahun = date('Y');
+        $antrean->getCollection()->transform(function ($item) use ($tahun) {
+            $saldo = $item->pegawai->saldoCutiTahunIni ?? null;
+
+            $kuotaTahunan  = $saldo->kuota_tahunan ?? 0;
+            $sisaTahunLalu = $saldo->sisa_cuti_tahun_lalu ?? 0;
+
+            $cutiTerpakai = PengajuanCuti::where('pegawai_id', $item->pegawai_id)
+                ->where('jenis_cuti', 'Cuti Tahunan')
+                ->where('status', 'disetujui')
+                ->whereYear('tanggal_mulai', $tahun)
+                ->sum('jumlah_hari');
+
+            $totalTersedia = ($kuotaTahunan + $sisaTahunLalu) - $cutiTerpakai;
+
+            // Tambahkan property baru ke object pegawai agar bisa dibaca di Vue
+            $item->pegawai->sisa_cuti_tersedia = $totalTersedia;
+            $item->pegawai->kuota_tahunan      = $kuotaTahunan;
+            $item->pegawai->sisa_tahun_lalu    = $sisaTahunLalu;
+            $item->pegawai->cuti_terpakai      = $cutiTerpakai;
+
+            return $item;
+        });
+
         return Inertia::render('Atasan/AntreanApproval', [
             'antrean' => $antrean,
-            'filters' => $request->only(['search', 'jenis_cuti']),
+            // 'status' ditambahkan agar filter dropdown Vue tetap terisi setelah reload/paginate
+            'filters' => $request->only(['search', 'jenis_cuti', 'status']),
         ]);
     }
 
-    private function isCutiTahunan($jenisCuti)
+    private function isCutiTahunan(?string $jenisCuti): bool
     {
         if ($jenisCuti === null || $jenisCuti === '') {
             return true;
@@ -70,7 +136,7 @@ class ApprovalController extends Controller
     }
 
     // 2. Memproses Persetujuan atau Penolakan
-    public function process(Request $request, $id)
+    public function process(Request $request, int $id)
     {
         $request->validate([
             'action' => ['required', 'in:approve,reject'],
@@ -95,6 +161,14 @@ class ApprovalController extends Controller
             abort(403, 'Pengajuan berada di luar departemen Anda.');
         }
 
+        // $levelApproval = angka level (1-4) tempat pengajuan SEDANG berada
+        // sebelum diproses. Nilai ini didapat dari status 'menunggu_lX' yang
+        // SUDAH divalidasi lewat pengecekan $roleYangDibutuhkan di atas, jadi
+        // sudah pasti sinkron dengan role atasan yang sedang login — tidak
+        // perlu ditebak ulang lewat switch/if role_id seperti biasanya
+        // dilakukan, karena bisa berisiko tidak sinkron kalau suatu saat
+        // pemetaan role_id berubah di satu tempat tapi lupa diubah di tempat
+        // lain.
         $levelApproval = [
             'menunggu_l1' => 1,
             'menunggu_l2' => 2,
@@ -102,13 +176,37 @@ class ApprovalController extends Controller
             'menunggu_l4' => 4,
         ][$statusSaatIni];
 
-        // --- JIKA DITOLAK ---
+        // --- JIKA DITOLAK / DITANGGUHKAN ---
         if ($request->action === 'reject') {
-            $alasanPenolakan = $request->input('catatan', 'Ditolak oleh atasan');
-            $keteranganLama = explode('|', $pengajuan->keterangan)[0];
-            $keteranganBaru = trim($keteranganLama) . ' | ' . $alasanPenolakan;
+            $alasanPenolakan = $request->input('catatan', 'Ada agenda/tugas kantor');
+            $namaApprover = $user->nama ?? 'Atasan'; // Mengambil nama atasan yang sedang login
 
-            $pengajuan->update(['status' => 'ditolak', 'keterangan' => $keteranganBaru]);
+            // Ambil alasan murni pegawai (bagian sebelum tanda '|')
+            $alasanUtama = trim(explode('|', $pengajuan->keterangan)[0]);
+            if (empty($alasanUtama) || $alasanUtama === '-') {
+                $alasanUtama = 'Tidak ada alasan awal';
+            }
+
+            // Format kalimat rapi memuat nama atasan & keterangan cuti ulang
+            $keteranganBaru = "{$alasanUtama} (Ditangguhkan oleh {$namaApprover}: {$alasanPenolakan} — Pengajuan Cuti Ulang)";
+
+            // ================= PERBAIKAN: SUMBER KEBENARAN LEVEL PENOLAK =================
+            // Root cause bug "penolakan L1 tampil di kotak L4" di halaman Monitoring
+            // Cuti: frontend sebelumnya harus MENEBAK level penolak dari teks
+            // `keterangan` (rawan meleset kalau format teks berubah/tidak lengkap).
+            // Sekarang kita simpan ANGKA LEVEL PENOLAK secara eksplisit & langsung
+            // ke kolom `level_saat_ini` memakai $levelApproval — nilai ini sumber
+            // kebenaran (source of truth) satu-satunya yang dipakai juga di
+            // ApprovalLog di bawah, sehingga dijamin selalu sinkron dan tidak
+            // pernah kosong/salah level saat pengajuan ditolak.
+            // (int) ditambahkan sebagai jaga-jaga tipe data supaya kolom
+            // `level_saat_ini` selalu berupa angka murni, bukan string.
+            $pengajuan->update([
+                'status' => 'ditolak',
+                'keterangan' => $keteranganBaru,
+                'level_saat_ini' => (int) $levelApproval,
+            ]);
+            // ================= END PERBAIKAN =================
 
             ApprovalLog::create([
                 'pengajuan_id' => $pengajuan->id,
@@ -122,12 +220,12 @@ class ApprovalController extends Controller
             // Kirim notifikasi penolakan ke pegawai
             Notifikasi::create([
                 'pegawai_id' => $targetUserId,
-                'judul'      => 'Pengajuan Cuti Ditolak',
-                'pesan'      => 'Pengajuan Anda ditolak oleh atasan. Alasan: ' . $alasanPenolakan,
+                'judul'      => 'Pengajuan Cuti Ditangguhkan',
+                'pesan'      => 'Pengajuan Anda ditangguhkan oleh ' . $namaApprover . '. Alasan: ' . $alasanPenolakan,
                 'is_read'    => false,
             ]);
 
-            return back()->with('success', 'Pengajuan cuti berhasil ditolak.');
+            return back()->with('success', 'Pengajuan cuti berhasil ditangguhkan.');
         }
 
         // --- JIKA DISETUJUI (LOGIKA ALUR BARU KEMENTAN) ---
@@ -257,13 +355,13 @@ class ApprovalController extends Controller
         return back()->with('success', 'Pengajuan cuti berhasil diproses dan diteruskan.');
     }
 
-    public function approve(Request $request, $id)
+    public function approve(Request $request, int $id)
     {
         $request->merge(['action' => 'approve']);
         return $this->process($request, $id);
     }
 
-    public function reject(Request $request, $id)
+    public function reject(Request $request, int $id)
     {
         $request->merge(['action' => 'reject']);
         return $this->process($request, $id);
@@ -273,7 +371,8 @@ class ApprovalController extends Controller
     public function history(Request $request)
     {
         $user = Auth::user();
-        $query = PengajuanCuti::with('pegawai');
+        // PERBAIKAN: Menambahkan relasi 'saldoCutiTahunIni' pada riwayat
+        $query = PengajuanCuti::with(['pegawai.saldoCutiTahunIni']);
 
         // Logika filter riwayat: Tampilkan data yang SUDAH melewati tahap/level atasan tersebut
         if ($user->role_id === 2) {

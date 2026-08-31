@@ -189,11 +189,20 @@ const resetFilters = () => {
                             />
                         </div>
 
-                        <!-- Dropdown Bulan -->
+                        <!--
+                            Dropdown Bulan
+                            PERBAIKAN TAMPILAN:
+                            - "bg-none" ditambahkan supaya tidak numpuk sama
+                              background-image chevron bawaan (mis. dari plugin
+                              @tailwindcss/forms) dengan SVG panah custom di bawah
+                              -> ini yang bikin efek "berbayang"/dobel sebelumnya.
+                            - border & warna teks dibikin lebih tegas (tidak pudar),
+                              menyamai gaya dropdown di halaman Monitoring Cuti.
+                        -->
                         <div class="relative">
                             <select
                                 v-model="filterBulan"
-                                class="pl-4 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500 appearance-none bg-white min-w-[120px]"
+                                class="pl-4 pr-8 py-2 border border-gray-400 rounded-lg text-sm text-gray-700 font-medium focus:ring-blue-500 focus:border-blue-500 appearance-none bg-none bg-white min-w-[120px]"
                             >
                                 <option value="">Semua Bulan</option>
                                 <option
@@ -208,7 +217,7 @@ const resetFilters = () => {
                                 class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
                             >
                                 <svg
-                                    class="w-4 h-4 text-gray-400"
+                                    class="w-4 h-4 text-gray-500"
                                     fill="none"
                                     stroke="currentColor"
                                     viewBox="0 0 24 24"
@@ -223,13 +232,18 @@ const resetFilters = () => {
                             </span>
                         </div>
 
-                        <!-- Dropdown Tahun -->
+                        <!--
+                            Dropdown Tahun
+                            PERBAIKAN TAMPILAN: sama seperti Dropdown Bulan di atas
+                            -> "bg-none" (fix efek berbayang) + border & teks lebih
+                            tegas + ikon kalender & panah dibikin lebih pekat.
+                        -->
                         <div class="relative">
                             <span
                                 class="absolute inset-y-0 left-0 flex items-center pl-3"
                             >
                                 <svg
-                                    class="w-4 h-4 text-gray-400"
+                                    class="w-4 h-4 text-gray-500"
                                     fill="none"
                                     stroke="currentColor"
                                     viewBox="0 0 24 24"
@@ -244,7 +258,7 @@ const resetFilters = () => {
                             </span>
                             <select
                                 v-model="filterTahun"
-                                class="pl-10 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500 appearance-none bg-white"
+                                class="pl-10 pr-8 py-2 border border-gray-400 rounded-lg text-sm text-gray-700 font-medium focus:ring-blue-500 focus:border-blue-500 appearance-none bg-none bg-white"
                             >
                                 <option value="2026">2026</option>
                                 <option value="2025">2025</option>
@@ -254,7 +268,7 @@ const resetFilters = () => {
                                 class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
                             >
                                 <svg
-                                    class="w-4 h-4 text-gray-400"
+                                    class="w-4 h-4 text-gray-500"
                                     fill="none"
                                     stroke="currentColor"
                                     viewBox="0 0 24 24"
