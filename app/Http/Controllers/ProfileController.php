@@ -21,16 +21,27 @@ class ProfileController extends Controller
 
     public function update(Request $request): RedirectResponse
     {
-        // 1. Validasi Manual yang ketat (Tambahkan alamat_domisili)
+        // 1. Validasi Manual yang ketat (alamat_domisili & no_telepon)
         $request->validate([
             'nama' => ['required', 'string', 'max:255'],
-            'alamat_domisili' => ['nullable', 'string', 'max:500'], // <-- TAMBAHKAN INI
+            'alamat_domisili' => ['nullable', 'string', 'max:500'],
+            'no_telepon' => ['nullable', 'string', 'max:15'], // <-- TAMBAHAN: Nomor Telepon
             'foto_profil' => ['nullable', 'image', 'mimes:jpeg,png,jpg', 'max:2048'],
         ]);
 
         $pegawai = $request->user();
         $pegawai->nama = $request->nama;
-        $pegawai->alamat_domisili = $request->alamat_domisili; // <-- TAMBAHKAN INI
+        $pegawai->alamat_domisili = $request->alamat_domisili;
+
+        // FIX: Hanya timpa no_telepon jika memang dikirim di request.
+        // Sebelumnya baris ini selalu dijalankan tanpa syarat, sehingga
+        // form yang tidak menyertakan field no_telepon (mis. form ganti
+        // foto saja) mengirim null dan menimpa nilai lama di database.
+        // Ini menyebabkan error "Column 'no_telepon' cannot be null" pada
+        // pegawai yang kolom no_telepon-nya sebelumnya sudah kosong.
+        if ($request->filled('no_telepon')) {
+            $pegawai->no_telepon = $request->no_telepon;
+        }
 
         // 2. Jika ada file foto yang dikirim, simpan!
         if ($request->hasFile('foto_profil')) {

@@ -1,10 +1,19 @@
 <?php
 
+
+
+
 namespace App\Http\Middleware;
+
+
+
 
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 use App\Models\Notifikasi;
+
+
+
 
 class HandleInertiaRequests extends Middleware
 {
@@ -15,6 +24,9 @@ class HandleInertiaRequests extends Middleware
      */
     protected $rootView = 'app';
 
+
+
+
     /**
      * Determine the current asset version.
      */
@@ -22,6 +34,9 @@ class HandleInertiaRequests extends Middleware
     {
         return parent::version($request);
     }
+
+
+
 
     /**
      * Define the props that are shared by default.
@@ -32,6 +47,9 @@ class HandleInertiaRequests extends Middleware
     {
         $user = $request->user();
 
+
+
+
         // Ambil data notifikasi jika user sudah login menggunakan model Notifikasi
         $notifikasis = $user
             ? Notifikasi::where('pegawai_id', $user->id)
@@ -39,6 +57,9 @@ class HandleInertiaRequests extends Middleware
             ->take(5)
             ->get()
             : [];
+
+
+
 
         return [
             ...parent::share($request),
@@ -50,10 +71,10 @@ class HandleInertiaRequests extends Middleware
                     'role_id'            => $user->role_id,
                     'foto_profil'        => $user->foto_profil,
                     'jabatan'            => $user->jabatan,
-                    'departemen'         => $user->departemen,
+                    'kelompok_substansi' => $user->kelompok_substansi,
+                    'tim_kerja'          => $user->tim_kerja,
                     'alamat_domisili'    => $user->alamat_domisili, // <-- FIX: kolom ini hilang, menyebabkan alamat tidak muncul setelah refresh
-                    'kelompok_substansi' => $user->kelompok_substansi, // <-- Ditambahkan agar konsisten dengan tampilan di Profile Edit
-                    'tim_kerja'          => $user->tim_kerja, // <-- Ditambahkan agar konsisten dengan tampilan di Profile Edit
+                    'no_telepon'         => $user->no_telepon, // <-- FIX: kolom ini juga hilang, menyebabkan nomor telepon tidak muncul setelah refresh
                 ] : null,
             ],
             // TAMBAHAN: Flash message untuk mendukung pop-up session (sukses/error)

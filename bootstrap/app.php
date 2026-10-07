@@ -14,6 +14,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->web(append: [
             \App\Http\Middleware\HandleInertiaRequests::class,
             \Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets::class,
+            // Logout otomatis pegawai yang statusnya bukan 'Aktif' (lihat CekStatusAktif)
+            \App\Http\Middleware\CekStatusAktif::class,
         ]);
 
         // Tambahkan baris alias ini:

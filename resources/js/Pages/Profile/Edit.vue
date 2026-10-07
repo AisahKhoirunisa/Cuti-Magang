@@ -6,11 +6,12 @@ import { computed, ref } from "vue";
 const page = usePage();
 const user = computed(() => page.props.auth.user);
 
-// Setup Form Data Diri (Menambahkan alamat_domisili)
+// Setup Form Data Diri (Menambahkan alamat_domisili & no_telepon)
 const profileForm = useForm({
     _method: "patch",
     nama: user.value.nama,
-    alamat_domisili: user.value.alamat_domisili || "", // Kolom baru agar bisa diedit
+    alamat_domisili: user.value.alamat_domisili || "", // Kolom agar bisa diedit
+    no_telepon: user.value.no_telepon || "", // Kolom baru: Nomor Telepon
     foto_profil: null,
 });
 
@@ -137,7 +138,7 @@ const updatePassword = () => {
                                     class="text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-3 py-1.5 rounded-full w-full max-w-[200px] truncate"
                                 >
                                     {{
-                                        user.departemen ||
+                                        user.kelompok_substansi ||
                                         "Divisi/Departemen Kosong"
                                     }}
                                 </span>
@@ -145,6 +146,8 @@ const updatePassword = () => {
                         </div>
 
                         <input
+                            id="foto-profil"
+                            name="foto_profil"
                             type="file"
                             ref="photoInput"
                             class="hidden"
@@ -243,7 +246,7 @@ const updatePassword = () => {
                 <div class="md:col-span-2 space-y-6">
                     <!-- Form Data Diri -->
                     <div
-                        class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200"
+                        class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200"
                     >
                         <h3 class="text-lg font-bold text-slate-800 mb-1">
                             Informasi Profil
@@ -260,13 +263,16 @@ const updatePassword = () => {
                             <!-- Input Nama (Full Width) -->
                             <div>
                                 <label
+                                    for="nama-lengkap"
                                     class="block text-sm font-medium text-slate-700 mb-1"
                                     >Nama Lengkap</label
                                 >
                                 <input
+                                    id="nama-lengkap"
+                                    name="nama"
                                     v-model="profileForm.nama"
                                     type="text"
-                                    class="w-full rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-sm py-2 px-3"
+                                    class="w-full min-h-[44px] rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-base sm:text-sm py-2 px-3"
                                 />
                                 <span
                                     v-if="profileForm.errors.nama"
@@ -278,14 +284,17 @@ const updatePassword = () => {
                             <!-- Input Alamat Domisili (Bisa Diedit) -->
                             <div>
                                 <label
+                                    for="alamat-domisili"
                                     class="block text-sm font-medium text-slate-700 mb-1"
                                     >Alamat Domisili</label
                                 >
                                 <textarea
+                                    id="alamat-domisili"
+                                    name="alamat_domisili"
                                     v-model="profileForm.alamat_domisili"
                                     rows="2"
                                     placeholder="Contoh: Jl. Sudirman No. 10, Jakarta Selatan"
-                                    class="w-full rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-sm py-2 px-3 resize-none"
+                                    class="w-full min-h-[72px] rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-base sm:text-sm py-2 px-3 resize-y"
                                 ></textarea>
                                 <span
                                     v-if="profileForm.errors.alamat_domisili"
@@ -293,6 +302,28 @@ const updatePassword = () => {
                                     >{{
                                         profileForm.errors.alamat_domisili
                                     }}</span
+                                >
+                            </div>
+
+                            <!-- Input Nomor Telepon (Baru) -->
+                            <div>
+                                <label
+                                    for="nomor-telepon"
+                                    class="block text-sm font-medium text-slate-700 mb-1"
+                                    >Nomor Telepon</label
+                                >
+                                <input
+                                    id="nomor-telepon"
+                                    name="no_telepon"
+                                    v-model="profileForm.no_telepon"
+                                    type="text"
+                                    placeholder="Contoh: 081234567890"
+                                    class="w-full min-h-[44px] rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-base sm:text-sm py-2 px-3"
+                                />
+                                <span
+                                    v-if="profileForm.errors.no_telepon"
+                                    class="text-xs text-red-500 mt-1"
+                                    >{{ profileForm.errors.no_telepon }}</span
                                 >
                             </div>
 
@@ -312,6 +343,8 @@ const updatePassword = () => {
                                             >Nomor Induk Pegawai (NIP)</label
                                         >
                                         <input
+                                            id="nip-profil"
+                                            name="nip"
                                             :value="user.nip || 'Belum Diatur'"
                                             type="text"
                                             disabled
@@ -320,12 +353,15 @@ const updatePassword = () => {
                                     </div>
                                     <div>
                                         <label
+                                            for="kelompok-profil"
                                             class="block text-sm font-medium text-slate-700 mb-1"
-                                            >Divisi / Departemen</label
+                                            >Kelompok Substansi</label
                                         >
                                         <input
+                                            id="kelompok-profil"
+                                            name="kelompok_substansi"
                                             :value="
-                                                user.departemen ||
+                                                user.kelompok_substansi ||
                                                 'Belum Diatur'
                                             "
                                             type="text"
@@ -335,10 +371,13 @@ const updatePassword = () => {
                                     </div>
                                     <div class="md:col-span-2">
                                         <label
+                                            for="jabatan-profil"
                                             class="block text-sm font-medium text-slate-700 mb-1"
                                             >Jabatan</label
                                         >
                                         <input
+                                            id="jabatan-profil"
+                                            name="jabatan"
                                             :value="
                                                 user.jabatan || 'Belum Diatur'
                                             "
@@ -348,27 +387,15 @@ const updatePassword = () => {
                                         />
                                     </div>
 
-                                    <!-- Field Baru yang Hanya Baca -->
                                     <div>
                                         <label
-                                            class="block text-sm font-medium text-slate-700 mb-1"
-                                            >Kelompok Substansi</label
-                                        >
-                                        <input
-                                            :value="
-                                                user.kelompok_substansi || '-'
-                                            "
-                                            type="text"
-                                            disabled
-                                            class="w-full rounded-lg border-slate-200 bg-slate-50 text-slate-500 shadow-sm text-sm py-2 px-3 cursor-not-allowed"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label
+                                            for="tim-kerja-profil"
                                             class="block text-sm font-medium text-slate-700 mb-1"
                                             >Tim Kerja</label
                                         >
                                         <input
+                                            id="tim-kerja-profil"
+                                            name="tim_kerja"
                                             :value="user.tim_kerja || '-'"
                                             type="text"
                                             disabled
@@ -394,7 +421,7 @@ const updatePassword = () => {
                                 <button
                                     type="submit"
                                     :disabled="profileForm.processing"
-                                    class="px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-semibold hover:bg-slate-900 transition disabled:opacity-50"
+                                    class="min-h-[44px] w-full sm:w-auto px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-semibold hover:bg-slate-900 transition disabled:opacity-50"
                                 >
                                     Simpan Perubahan
                                 </button>
@@ -405,14 +432,14 @@ const updatePassword = () => {
                     <!-- Form Ubah Password -->
                     <div
                         id="password"
-                        class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200"
+                        class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200"
                     >
                         <h3 class="text-lg font-bold text-slate-800 mb-1">
-                            Ubah Password
+                            Ubah Kata Sandi
                         </h3>
                         <p class="text-xs text-slate-500 mb-5">
                             Pastikan akun Anda menggunakan kata sandi yang
-                            panjang dan acak agar tetap aman.
+                            panjang dan sulit ditebak agar tetap aman.
                         </p>
 
                         <form
@@ -421,13 +448,16 @@ const updatePassword = () => {
                         >
                             <div>
                                 <label
+                                    for="password-saat-ini"
                                     class="block text-sm font-medium text-slate-700 mb-1"
-                                    >Password Saat Ini</label
+                                    >Kata Sandi Saat Ini</label
                                 >
                                 <input
+                                    id="password-saat-ini"
+                                    name="current_password"
                                     v-model="passwordForm.current_password"
                                     type="password"
-                                    class="w-full rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-sm py-2 px-3"
+                                    class="w-full min-h-[44px] rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-base sm:text-sm py-2 px-3"
                                 />
                                 <span
                                     v-if="passwordForm.errors.current_password"
@@ -441,13 +471,16 @@ const updatePassword = () => {
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
                                     <label
+                                        for="password-baru"
                                         class="block text-sm font-medium text-slate-700 mb-1"
-                                        >Password Baru</label
+                                        >Kata Sandi Baru</label
                                     >
                                     <input
+                                        id="password-baru"
+                                        name="password"
                                         v-model="passwordForm.password"
                                         type="password"
-                                        class="w-full rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-sm py-2 px-3"
+                                        class="w-full min-h-[44px] rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-base sm:text-sm py-2 px-3"
                                     />
                                     <span
                                         v-if="passwordForm.errors.password"
@@ -459,33 +492,38 @@ const updatePassword = () => {
                                 </div>
                                 <div>
                                     <label
+                                        for="konfirmasi-password-baru"
                                         class="block text-sm font-medium text-slate-700 mb-1"
-                                        >Konfirmasi Password Baru</label
+                                        >Konfirmasi Kata Sandi Baru</label
                                     >
                                     <input
+                                        id="konfirmasi-password-baru"
+                                        name="password_confirmation"
                                         v-model="
                                             passwordForm.password_confirmation
                                         "
                                         type="password"
-                                        class="w-full rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-sm py-2 px-3"
+                                        class="w-full min-h-[44px] rounded-lg border-slate-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-base sm:text-sm py-2 px-3"
                                     />
                                 </div>
                             </div>
 
-                            <div class="flex items-center justify-between pt-2">
+                            <div
+                                class="flex flex-col items-start justify-between gap-3 pt-2 sm:flex-row sm:items-center"
+                            >
                                 <span
                                     v-if="passwordForm.recentlySuccessful"
                                     class="text-sm text-green-600 font-medium"
-                                    >Password diperbarui.</span
+                                    >Kata sandi berhasil diperbarui.</span
                                 >
                                 <span v-else></span>
 
                                 <button
                                     type="submit"
                                     :disabled="passwordForm.processing"
-                                    class="px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-semibold hover:bg-slate-900 transition disabled:opacity-50"
+                                    class="min-h-[44px] w-full sm:w-auto px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-semibold hover:bg-slate-900 transition disabled:opacity-50"
                                 >
-                                    Perbarui Password
+                                    Perbarui Kata Sandi
                                 </button>
                             </div>
                         </form>
