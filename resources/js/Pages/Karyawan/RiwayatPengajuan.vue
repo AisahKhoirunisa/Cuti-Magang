@@ -113,9 +113,7 @@ const sisaCutiTahunanInfo = computed(() => {
             s.sisa_kuota_tahun_ini != null
                 ? Number(s.sisa_kuota_tahun_ini)
                 : Math.max(0, (s.kuota_tahunan ?? 12) - (s.cuti_terpakai ?? 0));
-        const tahunLalu = Number(
-            s.saldo_bawaan_eligible ?? s.carry_forward_normal ?? 0,
-        );
+        const tahunLalu = Number(s.saldo_bawaan_eligible ?? s.carry_forward_normal ?? 0);
         const total =
             s.total_cuti_tersedia != null
                 ? Number(s.total_cuti_tersedia)
@@ -133,7 +131,9 @@ const sisaCutiTahunanInfo = computed(() => {
 
 // Rincian di Modal Detail: prioritaskan data per-pegawai, lalu stats backend
 const rincianSisaCuti = (item) => ({
-    total: item?.pegawai?.sisa_cuti_tersedia ?? sisaCutiTahunanInfo.value.total,
+    total:
+        item?.pegawai?.sisa_cuti_tersedia ??
+        sisaCutiTahunanInfo.value.total,
     tahunIni:
         item?.pegawai?.sisa_kuota_tahun_ini ??
         sisaCutiTahunanInfo.value.tahunIni,
@@ -150,19 +150,22 @@ const status = ref(props.filters?.status || "");
 const jenisCutiFilter = ref(props.filters?.jenis_cuti || "");
 
 let timeout = null;
-watch([status, jenisCutiFilter], ([newStatus, newJenisCuti]) => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => {
-        router.get(
-            route("karyawan.riwayat"),
-            {
-                status: newStatus,
-                jenis_cuti: newJenisCuti,
-            },
-            { preserveState: true, replace: true },
-        );
-    }, 300);
-});
+watch(
+    [status, jenisCutiFilter],
+    ([newStatus, newJenisCuti]) => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+            router.get(
+                route("karyawan.riwayat"),
+                {
+                    status: newStatus,
+                    jenis_cuti: newJenisCuti,
+                },
+                { preserveState: true, replace: true },
+            );
+        }, 300);
+    },
+);
 
 // ==========================================================
 // PEMBATALAN CUTI — MASIH MENUNGGU APPROVAL (menunggu_l1/l2/l3/l4)
@@ -201,9 +204,17 @@ const eksekusiBatalCuti = () => {
 };
 
 // ==========================================================
-// PEMBATALAN MANDIRI — CUTI SUDAH "DISETUJUI"
+// PEMBATALAN MANDIRI — CUTI SUDAH "DISETUJUI" DAN BELUM DIMULAI
 // Wajib isi alasan pembatalan. Saldo cuti otomatis dikembalikan
 // tanpa perlu approval ulang dari atasan.
+//
+// BARU: tombol Batalkan untuk cuti disetujui TIDAK lagi memeriksa
+// status saja, tetapi memakai flag `item.bisa_batal_mandiri` yang dikirim
+// CutiController@history (aturan tunggal: disetujui DAN tanggal mulai
+// masih sesudah hari ini, dihitung dengan jam SERVER). Tanggal sengaja
+// tidak dihitung di sini, supaya jam perangkat pengguna tidak bisa
+// dimanipulasi. Server (CutiController@batalkanMandiri) tetap menolak
+// permintaan yang melanggar aturan yang sama.
 //
 // PEMBARUAN: validasi "alasan wajib diisi" sebelumnya memakai alert()
 // bawaan browser (tampilannya "sistem", tidak bisa di-styling, dan
@@ -1315,7 +1326,9 @@ const eksekusiRevisi = () => {
                         <option value="">Semua Jenis Cuti</option>
                         <option value="Cuti Tahunan">Cuti Tahunan</option>
                         <option value="Cuti Besar">Cuti Besar</option>
-                        <option value="Cuti Melahirkan">Cuti Melahirkan</option>
+                        <option value="Cuti Melahirkan">
+                            Cuti Melahirkan
+                        </option>
                         <option value="Cuti Alasan Penting">
                             Cuti Alasan Penting
                         </option>
@@ -1490,9 +1503,12 @@ const eksekusiRevisi = () => {
                                 Batalkan
                             </button>
 
-                            <!-- Sudah disetujui -> Batalkan mandiri (wajib alasan) -->
+                            <!-- Sudah disetujui DAN belum dimulai -> Batalkan mandiri (wajib alasan).
+                                 [DIUBAH] Kondisi memakai flag dari server (bisa_batal_mandiri),
+                                 bukan lagi item.status === 'disetujui'. Setelah cuti dimulai,
+                                 tombol ini hilang di tampilan HP. -->
                             <button
-                                v-else-if="item.status === 'disetujui'"
+                                v-else-if="item.bisa_batal_mandiri"
                                 type="button"
                                 @click="openBatalModal(item.id)"
                                 class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-semibold transition shadow-sm cursor-pointer"
@@ -1736,11 +1752,13 @@ const eksekusiRevisi = () => {
                                             Batalkan
                                         </button>
 
-                                        <!-- Status SUDAH DISETUJUI -->
+                                        <!-- Status SUDAH DISETUJUI DAN BELUM DIMULAI.
+                                             [DIUBAH] Kondisi memakai flag dari server
+                                             (bisa_batal_mandiri), bukan lagi
+                                             item.status === 'disetujui'. Setelah cuti dimulai,
+                                             baris ini jatuh ke tombol abu-abu (v-else) di bawah. -->
                                         <button
-                                            v-else-if="
-                                                item.status === 'disetujui'
-                                            "
+                                            v-else-if="item.bisa_batal_mandiri"
                                             type="button"
                                             @click="openBatalModal(item.id)"
                                             class="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-semibold transition shadow-sm cursor-pointer w-full"
@@ -1762,7 +1780,8 @@ const eksekusiRevisi = () => {
                                             Batalkan
                                         </button>
 
-                                        <!-- Status lain (ditolak, dibatalkan_reguler, dll.) -->
+                                        <!-- Status lain (ditolak, dibatalkan_reguler, dll.)
+                                             dan cuti disetujui yang sudah dimulai/lewat -->
                                         <span
                                             v-else
                                             class="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-xl text-xs font-semibold cursor-not-allowed select-none w-full"
@@ -1789,7 +1808,9 @@ const eksekusiRevisi = () => {
                 <div
                     class="px-4 sm:px-6 py-4 bg-slate-50/50 border-t border-slate-100 flex flex-col md:flex-row justify-between items-center gap-3 md:gap-4"
                 >
-                    <p class="text-xs text-slate-500 text-center md:text-left">
+                    <p
+                        class="text-xs text-slate-500 text-center md:text-left"
+                    >
                         Menampilkan halaman {{ riwayat.current_page }} dari
                         total {{ riwayat.last_page }} halaman (maksimal 5 data
                         per halaman).
@@ -2027,9 +2048,7 @@ const eksekusiRevisi = () => {
                                 (Tahun Ini:
                                 {{ rincianSisaCuti(selectedDetail).tahunIni }}
                                 hari | Saldo Bawaan:
-                                {{
-                                    rincianSisaCuti(selectedDetail).saldoBawaan
-                                }}
+                                {{ rincianSisaCuti(selectedDetail).saldoBawaan }}
                                 hari)
                             </span>
                         </div>
@@ -2345,7 +2364,7 @@ const eksekusiRevisi = () => {
         </div>
     </Teleport>
 
-    <!-- MODAL PEMBATALAN MANDIRI (khusus status "Disetujui") -->
+    <!-- MODAL PEMBATALAN MANDIRI (khusus status "Disetujui" yang belum dimulai) -->
     <Teleport to="body">
         <div v-if="batalModal.show" class="relative z-[9999]">
             <div
@@ -2365,9 +2384,10 @@ const eksekusiRevisi = () => {
                         <h3 class="text-lg font-extrabold text-slate-800 mb-1">
                             Batalkan Cuti
                         </h3>
+                        <!-- [DIUBAH] Kalimat dibuat netral: saldo hanya dikembalikan untuk Cuti Tahunan. -->
                         <p class="text-xs text-slate-500 mb-4 font-medium">
-                            Saldo cuti Anda akan otomatis dikembalikan. Tindakan
-                            ini tidak dapat diubah.
+                            Untuk Cuti Tahunan, saldo cuti Anda akan otomatis
+                            dikembalikan. Tindakan ini tidak dapat diubah.
                         </p>
 
                         <label
@@ -2808,3 +2828,4 @@ const eksekusiRevisi = () => {
         </div>
     </Teleport>
 </template>
+

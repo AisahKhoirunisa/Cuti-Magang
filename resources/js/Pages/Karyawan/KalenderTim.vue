@@ -1,10 +1,21 @@
 <script setup>
 import MainLayout from "@/Layouts/MainLayout.vue";
 import { Head, router } from "@inertiajs/vue3";
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
+import {
+    ref,
+    computed,
+    watch,
+    onMounted,
+    onBeforeUnmount,
+    nextTick,
+} from "vue";
 
 const props = defineProps({
     cutiTim: Array,
+    // [BARU] Bulan yang sedang dilihat, format "YYYY-MM". Dikirim dari
+    // CutiController::teamCalendar(), yang hanya mengirim cuti beririsan
+    // dengan bulan ini (termasuk yang sudah lewat).
+    bulan: String,
     kelompok_substansi: String,
     hariLiburs: Array, // Menerima data dari Controller (Database Admin HR)
     listKelompok: Array, // Dipakai untuk filter L3 & L4
@@ -16,7 +27,29 @@ const props = defineProps({
     userPegawaiId: Number,
 });
 
-const currentDate = ref(new Date());
+// ================= BULAN YANG DILIHAT =================
+const parseBulan = (s) => {
+    const m = /^(\d{4})-(\d{2})$/.exec(s || "");
+    return m
+        ? new Date(Number(m[1]), Number(m[2]) - 1, 1)
+        : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+};
+const formatBulan = (d) =>
+    `d.getFullYear()-{String(d.getMonth() + 1).padStart(2, "0")}`;
+
+const currentDate = ref(parseBulan(props.bulan));
+const memuat = ref(false); // true selama data bulan baru dimuat dari server
+
+// Jaga sinkron bila server mengirim bulan lain (mis. tombol Back browser).
+watch(
+    () => props.bulan,
+    (val) => {
+        if (val && val !== formatBulan(currentDate.value)) {
+            currentDate.value = parseBulan(val);
+        }
+    },
+);
+
 const namaBulan = [
     "Januari",
     "Februari",
@@ -33,6 +66,20 @@ const namaBulan = [
 ];
 const bulanAktif = computed(() => namaBulan[currentDate.value.getMonth()]);
 const tahunAktif = computed(() => currentDate.value.getFullYear());
+// ================= END BULAN YANG DILIHAT =================
+
+// ================= [BARU] HELPER LAMPAU / HARI INI =================
+// Pembeda dihitung PER TANGGAL SEL, bukan per pengajuan. Cuti 13-19 Okt
+// akan tampak pudar di tanggal yang sudah lewat, normal di tanggal
+// mendatang, dan jelas di hari ini. Lebih akurat untuk cuti yang sedang
+// berjalan.
+const toDateStr = (d) =>
+    `d.getFullYear()-{String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const todayStr = toDateStr(new Date());
+
+const isLampau = (dateStr) => !!dateStr && dateStr < todayStr;
+const isHariIni = (dateStr) => dateStr === todayStr;
+// ================= END HELPER LAMPAU / HARI INI =================
 
 // --- FITUR FILTER BERJENJANG SESUAI LEVEL ATASAN ---
 // L1 (role_id 2)       : TANPA dropdown filter, otomatis hanya lihat
@@ -96,20 +143,56 @@ const getInitialFilter = () => {
 const initialFilterFromUrl = getInitialFilter();
 const selectedFilter = ref(initialFilterFromUrl ?? filterAllLabel.value);
 
-// Fungsi memicu perubahan data ketika dropdown dipilih
-const applyFilter = () => {
+// ================= [BARU] MUAT DATA PER BULAN DARI SERVER =================
+// Data cuti dikirim per bulan, jadi setiap pindah bulan (atau ganti filter)
+// kita minta ulang ke server. `only` membuat permintaan ringan: hariLiburs
+// dan prop lain tidak dikirim ulang. Parameter `bulan` ada di URL, jadi
+// refresh atau berbagi tautan tetap membuka bulan yang sama.
+const muatKalender = (targetDate) => {
     router.get(
         window.location.pathname,
         {
+            bulan: formatBulan(targetDate),
             filter:
                 selectedFilter.value === filterAllLabel.value
                     ? undefined
                     : selectedFilter.value,
         },
-        { preserveState: true, preserveScroll: true, replace: true },
+        {
+            preserveState: true,
+            preserveScroll: true,
+            replace: true,
+            only: ["cutiTim", "bulan"],
+            onStart: () => (memuat.value = true),
+            onFinish: () => (memuat.value = false),
+        },
     );
 };
-// ----------------------------------------------------
+
+const gantiBulan = (selisih) => {
+    const target = new Date(
+        currentDate.value.getFullYear(),
+        currentDate.value.getMonth() + selisih,
+        1,
+    );
+    currentDate.value = target; // judul bulan langsung berubah
+    muatKalender(target);
+};
+const prevMonth = () => gantiBulan(-1);
+const nextMonth = () => gantiBulan(1);
+const keBulanIni = () => {
+    const target = new Date(
+        new Date().getFullYear(),
+        new Date().getMonth(),
+        1,
+    );
+    currentDate.value = target;
+    muatKalender(target);
+};
+
+// Dropdown filter ikut membawa bulan yang sedang dilihat
+const applyFilter = () => muatKalender(currentDate.value);
+// ================= END MUAT DATA PER BULAN =================
 
 // DAFTAR HARI LIBUR DINAMIS DIAMBIL DARI DATABASE ADMIN HR
 const holidayList = computed(() => {
@@ -121,21 +204,6 @@ const holidayList = computed(() => {
     }
     return holidays;
 });
-
-const prevMonth = () => {
-    currentDate.value = new Date(
-        currentDate.value.getFullYear(),
-        currentDate.value.getMonth() - 1,
-        1,
-    );
-};
-const nextMonth = () => {
-    currentDate.value = new Date(
-        currentDate.value.getFullYear(),
-        currentDate.value.getMonth() + 1,
-        1,
-    );
-};
 
 const calendarDays = computed(() => {
     const year = currentDate.value.getFullYear();
@@ -173,7 +241,8 @@ const getHolidayName = (dateStr) => {
 //   - menunggu_l1..l4 / ditolak / dibatalkan / dll.    -> TIDAK tampil
 // Catatan: filter ini lapisan kedua. Pembatasan utama ada di
 // CutiController::teamCalendar(), yang juga hanya mengirim pengajuan
-// berstatus 'disetujui'.
+// berstatus 'disetujui'. Cuti yang sudah lewat TETAP tampil (dibedakan
+// secara visual lewat isLampau()).
 const isMilikSaya = (item) => {
     if (!props.userPegawaiId) return false;
     const idPegawai = item?.pegawai_id ?? item?.pegawai?.id;
@@ -445,8 +514,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                         Jadwal Cuti Tim
                     </h1>
                     <p class="text-slate-500 mt-1 text-sm">
-                        Pantau kalender kehadiran dan jadwal cuti anggota tim
-                        Anda.
+                        Pantau kalender kehadiran dan jadwal cuti anggota tim Anda.
                     </p>
                     <!-- BADGE INFO KHUSUS L1 -->
                     <div
@@ -472,25 +540,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
                 <!-- TOOLBAR AKSI (Filter & Navigasi Bulan) -->
                 <div class="flex flex-col sm:flex-row items-center gap-3">
-                    <div
-                        class="relative w-full sm:w-auto"
-                        v-if="showFilterDropdown"
-                    >
-                        <div
-                            class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-                        >
-                            <svg
-                                class="h-4 w-4 text-slate-400"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
-                                ></path>
+                    <div class="relative w-full sm:w-auto" v-if="showFilterDropdown">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <svg class="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path>
                             </svg>
                         </div>
                         <select
@@ -501,9 +554,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                             @change="applyFilter"
                             class="appearance-none min-h-[44px] pl-9 pr-10 py-2.5 w-full sm:min-w-[240px] bg-white border border-slate-200 rounded-xl shadow-sm text-base sm:text-sm font-medium text-slate-700 hover:border-slate-300 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors cursor-pointer"
                         >
-                            <option :value="filterAllLabel">
-                                {{ filterAllLabel }}
-                            </option>
+                            <option :value="filterAllLabel">{{ filterAllLabel }}</option>
                             <option
                                 v-for="opsi in filterOptions"
                                 :key="opsi"
@@ -512,21 +563,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                 {{ opsi }}
                             </option>
                         </select>
-                        <div
-                            class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none"
-                        >
-                            <svg
-                                class="h-4 w-4 text-slate-400"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M19 9l-7 7-7-7"
-                                ></path>
+                        <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                            <svg class="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                             </svg>
                         </div>
                     </div>
@@ -579,6 +618,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                 ></path>
                             </svg>
                         </button>
+                        <!-- Kembali ke bulan berjalan -->
+                        <button
+                            type="button"
+                            @click.prevent="keBulanIni"
+                            class="text-xs font-semibold text-green-700 hover:bg-green-50 px-2 py-1 rounded-lg transition cursor-pointer"
+                        >
+                            Hari ini
+                        </button>
                     </div>
                 </div>
             </div>
@@ -620,7 +667,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                         ><span class="hidden sm:inline">Minggu</span>
                     </span>
                 </div>
-                <div class="grid grid-cols-7 auto-rows-fr bg-slate-200 gap-px">
+                <div
+                    class="grid grid-cols-7 auto-rows-fr bg-slate-200 gap-px transition-opacity"
+                    :class="{ 'opacity-60': memuat }"
+                    :aria-busy="memuat"
+                >
                     <div
                         v-for="(day, index) in calendarDays"
                         :key="index"
@@ -648,6 +699,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                             !getHolidayName(day.dateString),
                                         'bg-red-500 text-white font-bold shadow-sm':
                                             getHolidayName(day.dateString),
+                                        'ring-2 ring-green-500 ring-offset-1':
+                                            isHariIni(day.dateString),
                                     }"
                                 >
                                     {{ day.dayNum }}
@@ -657,7 +710,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                         day.isCurrentMonth &&
                                         getCutiOnDate(day.dateString).length > 0
                                     "
-                                    class="hidden sm:inline-block text-[10px] bg-green-100 text-green-700 font-bold px-1.5 py-0.5 rounded-full"
+                                    class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                                    :class="
+                                        isLampau(day.dateString)
+                                            ? 'bg-slate-100 text-slate-400'
+                                            : 'bg-green-100 text-green-700'
+                                    "
                                 >
                                     {{ getCutiOnDate(day.dateString).length }}
                                     cuti
@@ -682,11 +740,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                 getCutiOnDate(day.dateString).length > 0
                             "
                             class="lg:hidden flex flex-wrap items-center gap-0.5 sm:gap-1 mt-1 px-0.5"
+                            :class="isLampau(day.dateString) ? 'opacity-50' : ''"
                         >
                             <span
-                                v-for="cuti in getCutiTitikDiGrid(
-                                    day.dateString,
-                                )"
+                                v-for="cuti in getCutiTitikDiGrid(day.dateString)"
                                 :key="cuti.id"
                                 class="w-2 h-2 rounded-full shrink-0"
                                 :class="[
@@ -705,15 +762,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
                         <!-- OPSI D (DESKTOP): hanya beberapa nama teratas, sisanya
                              "+X lainnya". Entri milik sendiri selalu di atas,
-                             bertanda "(Anda)" + ring hijau. -->
+                             bertanda "(Anda)" + ring hijau. Tanggal yang sudah
+                             lewat dipudarkan. -->
                         <div
                             class="hidden lg:block space-y-1 mt-1"
+                            :class="
+                                isLampau(day.dateString)
+                                    ? 'opacity-50 grayscale-[40%]'
+                                    : ''
+                            "
                             v-if="day.isCurrentMonth"
                         >
                             <template
-                                v-for="cuti in getCutiRingkasDiGrid(
-                                    day.dateString,
-                                )"
+                                v-for="cuti in getCutiRingkasDiGrid(day.dateString)"
                                 :key="cuti.id"
                             >
                                 <div
@@ -756,7 +817,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
             <!-- Petunjuk untuk HP -->
             <p class="lg:hidden text-center text-xs text-slate-400 -mt-1">
-                Ketuk tanggal bertanda titik untuk melihat siapa saja yang cuti.
+                Ketuk tanggal bertanda titik untuk melihat siapa saja yang
+                cuti.
             </p>
 
             <div
@@ -784,6 +846,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                         class="w-4 h-2.5 rounded-sm bg-white ring-2 ring-green-500"
                     ></span>
                     Cuti Anda
+                </div>
+                <!-- Keterangan tanggal yang sudah lewat -->
+                <div class="flex items-center gap-1.5">
+                    <span class="w-4 h-2.5 rounded-sm bg-slate-300 opacity-60"></span>
+                    Sudah lewat
                 </div>
             </div>
         </div>
@@ -828,7 +895,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                 v-if="selectedDateData.list.length > 0"
                                 class="text-xs text-slate-500 mt-0.5"
                             >
-                                {{ selectedDateData.list.length }} pegawai cuti
+                                {{ selectedDateData.list.length }} pegawai
+                                cuti
+                            </p>
+                            <!-- Status tanggal: riwayat / hari ini -->
+                            <p
+                                v-if="isLampau(selectedDateData.date)"
+                                class="text-[11px] font-semibold text-slate-400 mt-0.5"
+                            >
+                                Tanggal ini sudah lewat (riwayat)
+                            </p>
+                            <p
+                                v-else-if="isHariIni(selectedDateData.date)"
+                                class="text-[11px] font-semibold text-green-600 mt-0.5"
+                            >
+                                Hari ini
                             </p>
                         </div>
                         <button
@@ -860,21 +941,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                         class="shrink-0 px-5 pt-3"
                     >
                         <div class="relative">
-                            <div
-                                class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-                            >
-                                <svg
-                                    class="h-4 w-4 text-slate-400"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                >
-                                    <path
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        stroke-width="2"
-                                        d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"
-                                    ></path>
+                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <svg class="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"></path>
                                 </svg>
                             </div>
                             <input
@@ -922,20 +991,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
                         <!-- Pesan kalau hasil pencarian kosong -->
                         <p
-                            v-if="
-                                selectedDateData.list.length > 0 &&
-                                groupedModalList.length === 0
-                            "
+                            v-if="selectedDateData.list.length > 0 && groupedModalList.length === 0"
                             class="text-center text-sm text-slate-400 py-6"
                         >
                             Tidak ada pegawai dengan nama tersebut.
                         </p>
 
                         <!-- OPSI B: DAFTAR PEGAWAI CUTI PER JENIS CUTI -->
-                        <div
-                            v-if="groupedModalList.length > 0"
-                            class="space-y-4"
-                        >
+                        <div v-if="groupedModalList.length > 0" class="space-y-4">
                             <div
                                 v-for="grup in groupedModalList"
                                 :key="grup.jenis"
@@ -965,15 +1028,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                             <img
                                                 v-if="item.pegawai?.foto_profil"
                                                 :src="`/storage/${item.pegawai.foto_profil}`"
-                                                :alt="
-                                                    item.pegawai?.nama ||
-                                                    'Pegawai'
-                                                "
+                                                :alt="item.pegawai?.nama || 'Pegawai'"
                                                 class="w-full h-full object-cover"
                                             />
-                                            <span v-else>{{
-                                                getInisial(item.pegawai?.nama)
-                                            }}</span>
+                                            <span v-else>{{ getInisial(item.pegawai?.nama) }}</span>
                                         </div>
                                         <div class="min-w-0 flex-1">
                                             <div
@@ -983,10 +1041,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                                     class="font-semibold text-slate-800 text-sm truncate"
                                                     :title="item.pegawai?.nama"
                                                 >
-                                                    {{
-                                                        item.pegawai?.nama ||
-                                                        "Pegawai"
-                                                    }}
+                                                    {{ item.pegawai?.nama || "Pegawai" }}
                                                     <span
                                                         v-if="isMilikSaya(item)"
                                                         class="text-green-600 font-bold"
@@ -997,18 +1052,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                             <div
                                                 class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1"
                                             >
-                                                <span
-                                                    class="text-xs text-slate-500"
-                                                >
+                                                <span class="text-xs text-slate-500">
                                                     {{ formatRentang(item) }}
                                                     <span class="text-slate-300"
                                                         >·</span
                                                     >
                                                     <span
                                                         class="font-semibold text-slate-700"
-                                                        >{{
-                                                            getDurasiHari(item)
-                                                        }}
+                                                        >{{ getDurasiHari(item) }}
                                                         Hari</span
                                                     >
                                                 </span>
@@ -1037,3 +1088,4 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         </Transition>
     </Teleport>
 </template>
+

@@ -1,7 +1,7 @@
 <script setup>
 import MainLayout from "@/Layouts/MainLayout.vue";
-import { Head, useForm, usePage } from "@inertiajs/vue3";
-import { computed, ref, watch } from "vue";
+import { Head, useForm, usePage, router } from "@inertiajs/vue3";
+import { computed, ref, watch, onUnmounted, nextTick } from "vue";
 import Swal from "sweetalert2";
 
 const props = defineProps({
@@ -19,7 +19,7 @@ const props = defineProps({
         type: Array,
         default: null,
     },
-    // [BARU] Rentang pengajuan AKTIF milik user (menunggu_lX / disetujui),
+    // Rentang pengajuan AKTIF milik user (menunggu_lX / disetujui),
     // dikirim CutiController@create. Dipakai untuk peringatan dini bila
     // tanggal yang dipilih bentrok dengan pengajuan lain. Backend
     // (CutiController::store) tetap penjaga akhir.
@@ -27,16 +27,33 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    // Masa kerja & kelayakan Cuti Besar dihitung backend dari
+    // tanggal_masuk (CutiController@create). Dipakai sebagai sumber utama
+    // supaya konsisten dengan validasi store(). null = backend belum
+    // mengirim, jatuh ke perkiraan dari NIP.
+    masa_kerja_tahun: {
+        type: Number,
+        default: null,
+    },
+    boleh_cuti_besar: {
+        type: Boolean,
+        default: null,
+    },
 });
 
 // Jalur cadangan jika props sisa_cuti tidak dikirim
 const page = usePage();
 const authUser = computed(() => page.props.auth.user);
 
-// ================= MASA KERJA DARI NIP (syarat Cuti Besar) =================
+// ================= MASA KERJA (syarat Cuti Besar) =================
+// Sumber utama: prop dari backend (dihitung dari tanggal_masuk, sama dengan
+// validasi di CutiController::store). Cadangan: perkiraan dari NIP.
 // Format NIP PNS 18 digit: 8 digit tgl lahir + 6 digit TMT (YYYYMM) + 6 digit lainnya
 // Tahun pengangkatan = digit ke-9 s/d ke-12 → substring(8, 12)
 const masaKerjaTahun = computed(() => {
+    if (typeof props.masa_kerja_tahun === "number") {
+        return props.masa_kerja_tahun;
+    }
     const nip = authUser.value?.nip || "";
     if (nip.length >= 12) {
         const tahunAngkat = parseInt(nip.substring(8, 12), 10);
@@ -48,7 +65,11 @@ const masaKerjaTahun = computed(() => {
     return 5;
 });
 
-const canChooseCutiBesar = computed(() => masaKerjaTahun.value >= 5);
+const canChooseCutiBesar = computed(() =>
+    typeof props.boleh_cuti_besar === "boolean"
+        ? props.boleh_cuti_besar
+        : masaKerjaTahun.value >= 5,
+);
 // ================= END MASA KERJA =================
 
 // ================= ALUR PERSETUJUAN DINAMIS =================
@@ -123,6 +144,101 @@ const gunakanAlamatDomisili = ref(false);
 const gunakanNomorTeleponProfil = ref(false);
 const lampiranInput = ref(null);
 
+// ================= VALIDASI ANAK KE- (inline, tanpa popup) =================
+// Pesan merah tampil di bawah kolom, halaman scroll ke kolom itu, dan
+// pesan hilang begitu user mulai mengetik / mengubah nilai.
+const anakKeInput = ref(null);
+const anakKeError = ref("");
+
+watch(
+    () => form.anak_ke,
+    () => {
+        if (anakKeError.value) anakKeError.value = "";
+        if (form.errors.anak_ke) form.clearErrors("anak_ke");
+    },
+);
+
+// Jika user ganti jenis cuti, error ikut dibersihkan
+watch(
+    () => form.jenis_cuti,
+    () => {
+        anakKeError.value = "";
+    },
+);
+// ================= END VALIDASI ANAK KE- =================
+
+// ================= VALIDASI LAMPIRAN =================
+// Lampiran bersifat OPSIONAL. Aturan: PDF/JPG/PNG, maksimal 2 MB.
+// Pengecekan di browser mencegah upload sia-sia; backend
+// (CutiController::store) tetap penjaga akhir.
+const MAX_LAMPIRAN = 2 * 1024 * 1024; // 2 MB
+const EKSTENSI_BOLEH = ["pdf", "jpg", "jpeg", "png"];
+const MIME_BOLEH = ["application/pdf", "image/jpeg", "image/png"];
+const lampiranError = ref("");
+
+const tolakLampiran = (pesan) => {
+    lampiranError.value = pesan;
+    form.lampiran = null;
+    if (lampiranInput.value) lampiranInput.value.value = ""; // kosongkan input agar bisa pilih ulang
+};
+
+const onLampiranChange = (e) => {
+    const file = e.target.files[0] ?? null;
+    lampiranError.value = "";
+    form.clearErrors("lampiran");
+
+    if (!file) {
+        form.lampiran = null; // lampiran opsional
+        return;
+    }
+
+    const ekstensi = file.name.split(".").pop().toLowerCase();
+    // file.type bisa kosong di beberapa perangkat, jadi ekstensi tetap dicek
+    const tipeValid =
+        EKSTENSI_BOLEH.includes(ekstensi) &&
+        (file.type === "" || MIME_BOLEH.includes(file.type));
+
+    if (!tipeValid) {
+        return tolakLampiran(
+            "Format file tidak didukung. Gunakan PDF, JPG, atau PNG.",
+        );
+    }
+    if (file.size > MAX_LAMPIRAN) {
+        const mb = (file.size / 1024 / 1024).toFixed(1);
+        return tolakLampiran(
+            `Ukuran file ${mb} MB melebihi batas maksimal 2 MB.`,
+        );
+    }
+    form.lampiran = file;
+};
+
+const formatUkuranLampiran = (bytes) => {
+    if (bytes == null || isNaN(bytes)) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
+const hapusLampiran = () => {
+    lampiranError.value = "";
+    form.clearErrors("lampiran");
+    form.lampiran = null;
+    if (lampiranInput.value) lampiranInput.value.value = "";
+};
+
+// Cadangan: jika server tetap membalas 413 (melewati post_max_size PHP),
+// tampilkan pesan biasa, bukan modal halaman error.
+const stopInvalidListener = router.on("invalid", (event) => {
+    if (event.detail?.response?.status === 413) {
+        event.preventDefault();
+        tolakLampiran("Ukuran file terlalu besar. Maksimal 2 MB.");
+    }
+});
+onUnmounted(() => {
+    if (typeof stopInvalidListener === "function") stopInvalidListener();
+});
+// ================= END VALIDASI LAMPIRAN =================
+
 const toggleAlamatDomisili = (e) => {
     form.alamat_cuti = e.target.checked
         ? authUser.value.alamat_domisili || ""
@@ -138,11 +254,13 @@ const toggleNomorTeleponProfil = (e) => {
 const resetSemuaForm = () => {
     form.reset();
     form.clearErrors();
+    lampiranError.value = "";
+    anakKeError.value = "";
     form.jenis_cuti = "Cuti Tahunan";
     gunakanAlamatDomisili.value = false;
     gunakanNomorTeleponProfil.value = false;
     if (lampiranInput.value) {
-        lampiranInput.value.value = null;
+        lampiranInput.value.value = "";
     }
 };
 
@@ -253,7 +371,7 @@ const tahunTanpaSaldo = computed(() => {
 });
 // ================= END SALDO TAHUN BELUM ADA =================
 
-// ================= [BARU] PENGAJUAN GANDA / TANGGAL BENTROK =================
+// ================= PENGAJUAN GANDA / TANGGAL BENTROK =================
 // Pengajuan aktif milik user yang rentang tanggalnya bersinggungan dengan
 // rentang yang sedang dipilih. Dua rentang bentrok jika:
 //   mulai_baru <= selesai_lama  DAN  selesai_baru >= mulai_lama
@@ -404,7 +522,7 @@ const submit = () => {
         return;
     }
 
-    // [BARU] Tanggal bentrok dengan pengajuan aktif lain.
+    // Tanggal bentrok dengan pengajuan aktif lain.
     if (pengajuanBentrok.value) {
         Swal.fire({
             icon: "error",
@@ -415,7 +533,34 @@ const submit = () => {
         return;
     }
 
-    if (form.jenis_cuti !== "Cuti Melahirkan") {
+    // Lampiran bermasalah: jangan kirim, pesan sudah tampil di bawah input.
+    if (lampiranError.value) {
+        Swal.fire({
+            icon: "error",
+            title: "Lampiran tidak valid",
+            text: lampiranError.value,
+            confirmButtonColor: "#ef4444",
+        });
+        return;
+    }
+
+    // Cuti Melahirkan: anak ke- wajib. Pesan tampil merah di bawah kolom
+    // (tanpa SweetAlert), halaman scroll ke kolom itu.
+    if (form.jenis_cuti === "Cuti Melahirkan") {
+        const n = parseInt(form.anak_ke, 10);
+        if (!form.anak_ke || isNaN(n) || n < 1) {
+            anakKeError.value =
+                "Kolom Anak ke-berapa wajib diisi untuk Cuti Melahirkan.";
+            nextTick(() => {
+                anakKeInput.value?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "center",
+                });
+                anakKeInput.value?.focus({ preventScroll: true });
+            });
+            return;
+        }
+    } else {
         form.anak_ke = "";
     }
 
@@ -512,15 +657,27 @@ const submit = () => {
                                 <input
                                     id="anak-ke"
                                     name="anak_ke"
+                                    ref="anakKeInput"
                                     v-model="form.anak_ke"
                                     type="number"
                                     min="1"
-                                    required
                                     placeholder="Contoh: 1, 2, atau 3"
-                                    class="w-full md:w-1/2 min-h-[44px] text-base sm:text-sm border-slate-200 rounded-xl focus:ring-green-500 focus:border-green-500 py-2.5 px-3"
+                                    class="w-full md:w-1/2 min-h-[44px] text-base sm:text-sm rounded-xl py-2.5 px-3"
+                                    :class="
+                                        anakKeError || form.errors.anak_ke
+                                            ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
+                                            : 'border-slate-200 focus:ring-green-500 focus:border-green-500'
+                                    "
+                                    :aria-invalid="!!(anakKeError || form.errors.anak_ke)"
+                                    aria-describedby="anak-ke-error"
                                 />
-                                <span v-if="form.errors.anak_ke" class="text-xs text-red-500 mt-1 block">
-                                    {{ form.errors.anak_ke }}
+                                <span
+                                    v-if="anakKeError || form.errors.anak_ke"
+                                    id="anak-ke-error"
+                                    class="text-xs text-red-500 mt-1 block"
+                                    role="alert"
+                                >
+                                    {{ anakKeError || form.errors.anak_ke }}
                                 </span>
                             </div>
 
@@ -622,7 +779,7 @@ const submit = () => {
                                     </p>
                                 </div>
 
-                                <!-- [BARU] Tanggal bentrok dengan pengajuan aktif lain -->
+                                <!-- Tanggal bentrok dengan pengajuan aktif lain -->
                                 <div
                                     v-if="pengajuanBentrok"
                                     class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl px-3.5 py-2.5"
@@ -726,24 +883,59 @@ const submit = () => {
                                 </div>
                             </div>
 
-                            <!-- Lampiran -->
+                            <!-- Lampiran (opsional) -->
                             <div>
-                                <label for="lampiran" class="block text-sm font-semibold text-slate-700 mb-2">
+                                <label for="lampiran" class="block text-sm font-semibold text-slate-700 mb-1">
                                     Lampiran Dokumen
-                                    <span class="text-slate-400 font-normal">(Opsional: PDF/Gambar, Maks 2MB)</span>
                                 </label>
+                                <p class="text-xs text-slate-400 mb-2">
+                                    Opsional · PDF, JPG, atau PNG · Maksimal 2 MB
+                                </p>
                                 <input
                                     id="lampiran"
                                     name="lampiran"
                                     ref="lampiranInput"
                                     type="file"
-                                    @change="form.lampiran = $event.target.files[0] ?? null"
-                                    accept=".pdf,.jpg,.jpeg,.png"
+                                    @change="onLampiranChange"
+                                    accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
                                     class="w-full min-h-[44px] text-base sm:text-sm text-slate-500 file:mr-2 sm:file:mr-4 file:py-2 file:px-3 sm:file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100 border border-slate-200 rounded-xl cursor-pointer p-1"
+                                    :class="{ 'border-red-300': lampiranError || form.errors.lampiran }"
                                 />
-                                <span v-if="form.errors.lampiran" class="text-xs text-red-500 mt-1 block">
-                                    {{ form.errors.lampiran }}
+                                <!-- Preview file terpilih -->
+                                <div
+                                    v-if="form.lampiran && !lampiranError"
+                                    class="mt-2 flex items-center gap-2 rounded-xl border border-green-100 bg-green-50 px-3 py-2"
+                                >
+                                    <svg class="h-4 w-4 shrink-0 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                    <div class="min-w-0 flex-1">
+                                        <p class="truncate text-xs font-semibold text-slate-700">
+                                            {{ form.lampiran.name }}
+                                        </p>
+                                        <p class="text-[11px] text-slate-400">
+                                            {{ formatUkuranLampiran(form.lampiran.size) }}
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        @click="hapusLampiran"
+                                        class="shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-white hover:text-red-600 transition"
+                                        aria-label="Hapus lampiran"
+                                    >
+                                        Hapus
+                                    </button>
+                                </div>
+                                <span
+                                    v-if="lampiranError || form.errors.lampiran"
+                                    class="text-xs text-red-500 mt-1 block"
+                                    role="alert"
+                                >
+                                    {{ lampiranError || form.errors.lampiran }}
                                 </span>
+                                <p v-else-if="!form.lampiran" class="text-[11px] text-slate-400 mt-1">
+                                    Contoh: surat keterangan dokter. File besar? Kompres dulu agar di bawah 2 MB.
+                                </p>
                             </div>
                         </form>
                     </div>
@@ -940,6 +1132,7 @@ const submit = () => {
                         <li>Cuti Besar hanya dapat diajukan oleh pegawai dengan masa kerja minimal 5 tahun.</li>
                         <li>Cuti Tahunan hanya dapat diajukan untuk tahun yang saldonya sudah dibuat oleh Admin SDM.</li>
                         <li>Tanggal cuti tidak boleh bentrok dengan pengajuan lain yang masih menunggu persetujuan atau sudah disetujui.</li>
+                        <li>Lampiran bersifat opsional. Format yang diterima PDF, JPG, atau PNG dengan ukuran maksimal 2 MB.</li>
                     </ul>
                 </div>
 

@@ -328,21 +328,9 @@ const barisSaldoTahunan = computed(() => {
     }
 
     return [
-        {
-            tahun: currentYear - 2,
-            nilai: sisaDuaTahunLalu.value,
-            barClass: "bg-orange-400",
-        },
-        {
-            tahun: currentYear - 1,
-            nilai: sisaSatuTahunLalu.value,
-            barClass: "bg-orange-400",
-        },
-        {
-            tahun: currentYear,
-            nilai: jatahTahunIniUntukSaldo.value,
-            barClass: "bg-emerald-400",
-        },
+        { tahun: currentYear - 2, nilai: sisaDuaTahunLalu.value, barClass: "bg-orange-400" },
+        { tahun: currentYear - 1, nilai: sisaSatuTahunLalu.value, barClass: "bg-orange-400" },
+        { tahun: currentYear, nilai: jatahTahunIniUntukSaldo.value, barClass: "bg-emerald-400" },
     ];
 });
 
@@ -1075,24 +1063,14 @@ const confirmApproveCuti = () => {
 
 // [FIX DOUBLE-SUBMIT] Sama seperti approveModal: "processing" mencegah
 // klik ganda pada tombol "Kirim Penolakan" mengirim dua request sekaligus.
-const rejectModal = ref({
-    show: false,
-    item: null,
-    alasan: "",
-    processing: false,
-});
+const rejectModal = ref({ show: false, item: null, alasan: "", processing: false });
 const rejectError = ref(false);
 const openRejectModal = (item) => {
     rejectModal.value = { show: true, item, alasan: "", processing: false };
     rejectError.value = false;
 };
 const closeRejectModal = () => {
-    rejectModal.value = {
-        show: false,
-        item: null,
-        alasan: "",
-        processing: false,
-    };
+    rejectModal.value = { show: false, item: null, alasan: "", processing: false };
     rejectError.value = false;
 };
 const confirmRejectCuti = () => {
@@ -1466,7 +1444,9 @@ const getCatatanAtasanList = (item) => {
                 <div
                     class="absolute inset-0 bg-gradient-to-r from-emerald-950/90 via-emerald-900/55 to-transparent"
                 ></div>
-                <div class="relative max-w-2xl px-5 pt-8 pb-4 md:px-8 md:py-14">
+                <div
+                    class="relative max-w-2xl px-5 pt-8 pb-4 md:px-8 md:py-14"
+                >
                     <p
                         class="text-[10px] font-extrabold uppercase tracking-[0.2em] text-emerald-200"
                     >
@@ -1557,6 +1537,7 @@ const getCatatanAtasanList = (item) => {
                 </div>
                 <div
                     class="bg-slate-50 p-1 rounded-xl flex w-full sm:w-auto sm:inline-flex border border-slate-100"
+                    
                 >
                     <!-- Urutan tombol dibalik: Tim / Bawahan di kiri, Pribadi di kanan -->
                     <button
@@ -1692,12 +1673,8 @@ const getCatatanAtasanList = (item) => {
                             class="mt-2 pt-2 border-t border-slate-100"
                         >
                             <p class="text-[10px] text-slate-400 font-medium">
-                                Menurut riwayat sistem:
-                                {{ stats.cuti_terpakai_sistem }} hari. Ada
-                                penyesuaian
-                                {{ stats.selisih_koreksi > 0 ? "+" : ""
-                                }}{{ stats.selisih_koreksi }} hari dari Admin
-                                SDM.
+                                Menurut riwayat sistem: {{ stats.cuti_terpakai_sistem }} hari.
+                                Ada penyesuaian {{ stats.selisih_koreksi > 0 ? "+" : "" }}{{ stats.selisih_koreksi }} hari dari Admin SDM.
                             </p>
                         </div>
                     </div>
@@ -2005,10 +1982,7 @@ const getCatatanAtasanList = (item) => {
                             {{ formatDate(item.tanggal_selesai) }}
                             &middot; {{ item.jumlah_hari }} Hari
                         </p>
-                        <div
-                            class="flex items-center justify-between gap-2"
-                            @click.stop
-                        >
+                        <div class="flex items-center justify-between gap-2" @click.stop>
                             <span
                                 class="px-2.5 py-1 inline-flex text-[10px] font-extrabold rounded-lg uppercase tracking-wider"
                                 :class="formatStatus(item.status).class"
@@ -2166,9 +2140,7 @@ const getCatatanAtasanList = (item) => {
                 <div
                     class="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm lg:col-span-2"
                 >
-                    <div
-                        class="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start mb-5"
-                    >
+                    <div class="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start mb-5">
                         <div>
                             <h3 class="text-sm font-extrabold text-slate-800">
                                 {{
@@ -2183,14 +2155,9 @@ const getCatatanAtasanList = (item) => {
                                 Jumlah hari cuti per bulan, per jenis.
                             </p>
                         </div>
-                        <div
-                            class="flex flex-wrap items-center gap-2 w-full sm:w-auto"
-                        >
+                        <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                             <select
-                                v-if="
-                                    [4, 5, 6].includes(user.role_id) &&
-                                    (isAdminHR || activeTab === 'tim')
-                                "
+                                v-if="[4, 5, 6].includes(user.role_id) && (isAdminHR || activeTab === 'tim')"
                                 id="filter-kelompok-dashboard"
                                 name="kelompok_substansi"
                                 aria-label="Filter kelompok substansi"
@@ -2198,9 +2165,7 @@ const getCatatanAtasanList = (item) => {
                                 @change="applyKelompokSubstansiFilter"
                                 class="text-[11px] font-bold border border-slate-200 rounded-lg text-slate-600 focus:ring-brand-500 focus:border-brand-500 py-1.5 pl-3 pr-8 bg-white cursor-pointer w-full sm:w-auto"
                             >
-                                <option :value="null">
-                                    Semua Kelompok Substansi
-                                </option>
+                                <option :value="null">Semua Kelompok Substansi</option>
                                 <option
                                     v-for="kelompok in listKelompokSubstansi"
                                     :key="kelompok"
@@ -2210,21 +2175,21 @@ const getCatatanAtasanList = (item) => {
                                 </option>
                             </select>
                             <select
-                                id="filter-tahun-dashboard"
-                                name="tahun"
-                                aria-label="Filter tahun"
-                                v-model="selectedTahun"
-                                @change="applyKelompokSubstansiFilter"
-                                class="text-[11px] font-bold border border-slate-200 rounded-lg text-slate-600 focus:ring-brand-500 focus:border-brand-500 py-1.5 pl-3 pr-8 bg-white cursor-pointer w-full sm:w-auto"
-                            >
-                                <option
-                                    v-for="tahun in daftarTahunFilter"
-                                    :key="tahun"
-                                    :value="tahun.toString()"
-                                >
-                                    Tahun {{ tahun }}
-                                </option>
-                            </select>
+    id="filter-tahun-dashboard"
+    name="tahun"
+    aria-label="Filter tahun"
+    v-model="selectedTahun"
+    @change="applyKelompokSubstansiFilter"
+    class="text-[11px] font-bold border border-slate-200 rounded-lg text-slate-600 focus:ring-brand-500 focus:border-brand-500 py-1.5 pl-3 pr-8 bg-white cursor-pointer w-full sm:w-auto"
+>
+    <option
+        v-for="tahun in daftarTahunFilter"
+        :key="tahun"
+        :value="tahun.toString()"
+    >
+        Tahun {{ tahun }}
+    </option>
+</select>
                         </div>
                     </div>
 
@@ -2372,8 +2337,7 @@ const getCatatanAtasanList = (item) => {
                                 v-if="distribusiCuti.total === 0"
                                 class="text-center text-[11px] font-medium text-slate-400 mt-2"
                             >
-                                Belum ada cuti yang disetujui pada tahun
-                                {{ selectedTahun }}.
+                                Belum ada cuti yang disetujui pada tahun {{ selectedTahun }}.
                             </p>
 
                             <!-- Label bulan -->
@@ -2603,22 +2567,22 @@ const getCatatanAtasanList = (item) => {
                                         donutSegments.find(
                                             (s) => s.key === 'tahunan',
                                         ) &&
-                                        setHoveredDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'tahunan',
-                                            ),
-                                        )
+                                            setHoveredDonutSegment(
+                                                donutSegments.find(
+                                                    (s) => s.key === 'tahunan',
+                                                ),
+                                            )
                                     "
                                     @mouseleave="clearHoveredDonutSegment"
                                     @click="
                                         donutSegments.find(
                                             (s) => s.key === 'tahunan',
                                         ) &&
-                                        toggleDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'tahunan',
-                                            ),
-                                        )
+                                            toggleDonutSegment(
+                                                donutSegments.find(
+                                                    (s) => s.key === 'tahunan',
+                                                ),
+                                            )
                                     "
                                 >
                                     <span
@@ -2639,7 +2603,8 @@ const getCatatanAtasanList = (item) => {
                                     class="flex items-center justify-between text-[10px] px-1 py-0.5 rounded-md transition-colors cursor-pointer"
                                     :class="
                                         hoveredDonutSegment &&
-                                        hoveredDonutSegment.key === 'melahirkan'
+                                        hoveredDonutSegment.key ===
+                                            'melahirkan'
                                             ? 'bg-pink-50'
                                             : ''
                                     "
@@ -2647,22 +2612,24 @@ const getCatatanAtasanList = (item) => {
                                         donutSegments.find(
                                             (s) => s.key === 'melahirkan',
                                         ) &&
-                                        setHoveredDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'melahirkan',
-                                            ),
-                                        )
+                                            setHoveredDonutSegment(
+                                                donutSegments.find(
+                                                    (s) =>
+                                                        s.key === 'melahirkan',
+                                                ),
+                                            )
                                     "
                                     @mouseleave="clearHoveredDonutSegment"
                                     @click="
                                         donutSegments.find(
                                             (s) => s.key === 'melahirkan',
                                         ) &&
-                                        toggleDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'melahirkan',
-                                            ),
-                                        )
+                                            toggleDonutSegment(
+                                                donutSegments.find(
+                                                    (s) =>
+                                                        s.key === 'melahirkan',
+                                                ),
+                                            )
                                     "
                                 >
                                     <span
@@ -2691,22 +2658,22 @@ const getCatatanAtasanList = (item) => {
                                         donutSegments.find(
                                             (s) => s.key === 'penting',
                                         ) &&
-                                        setHoveredDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'penting',
-                                            ),
-                                        )
+                                            setHoveredDonutSegment(
+                                                donutSegments.find(
+                                                    (s) => s.key === 'penting',
+                                                ),
+                                            )
                                     "
                                     @mouseleave="clearHoveredDonutSegment"
                                     @click="
                                         donutSegments.find(
                                             (s) => s.key === 'penting',
                                         ) &&
-                                        toggleDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'penting',
-                                            ),
-                                        )
+                                            toggleDonutSegment(
+                                                donutSegments.find(
+                                                    (s) => s.key === 'penting',
+                                                ),
+                                            )
                                     "
                                 >
                                     <span
@@ -2735,22 +2702,22 @@ const getCatatanAtasanList = (item) => {
                                         donutSegments.find(
                                             (s) => s.key === 'besar',
                                         ) &&
-                                        setHoveredDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'besar',
-                                            ),
-                                        )
+                                            setHoveredDonutSegment(
+                                                donutSegments.find(
+                                                    (s) => s.key === 'besar',
+                                                ),
+                                            )
                                     "
                                     @mouseleave="clearHoveredDonutSegment"
                                     @click="
                                         donutSegments.find(
                                             (s) => s.key === 'besar',
                                         ) &&
-                                        toggleDonutSegment(
-                                            donutSegments.find(
-                                                (s) => s.key === 'besar',
-                                            ),
-                                        )
+                                            toggleDonutSegment(
+                                                donutSegments.find(
+                                                    (s) => s.key === 'besar',
+                                                ),
+                                            )
                                     "
                                 >
                                     <span
@@ -3154,9 +3121,7 @@ const getCatatanAtasanList = (item) => {
                             <div class="col-span-4 text-slate-500 font-medium">
                                 Anak ke berapa
                             </div>
-                            <div
-                                class="col-span-8 text-slate-800 font-semibold"
-                            >
+                            <div class="col-span-8 text-slate-800 font-semibold">
                                 {{ detailModal.data.anak_ke }}
                             </div>
                         </div>
@@ -3184,7 +3149,8 @@ const getCatatanAtasanList = (item) => {
                                 >
                                     {{
                                         detailModal.data.pegawai
-                                            ?.total_cuti_tersedia ?? 0
+                                            ?.total_cuti_tersedia ??
+                                        0
                                     }}
                                     Hari Total
                                 </span>
@@ -3194,12 +3160,14 @@ const getCatatanAtasanList = (item) => {
                                     (Tahun Ini:
                                     {{
                                         detailModal.data.pegawai
-                                            ?.sisa_hak_tahun_berjalan ?? 0
+                                            ?.sisa_hak_tahun_berjalan ??
+                                        0
                                     }}
                                     hari | Saldo Bawaan:
                                     {{
                                         detailModal.data.pegawai
-                                            ?.saldo_bawaan_eligible ?? 0
+                                            ?.saldo_bawaan_eligible ??
+                                        0
                                     }}
                                     hari)
                                 </span>
@@ -3777,9 +3745,7 @@ const getCatatanAtasanList = (item) => {
                         </button>
                     </div>
 
-                    <div
-                        class="flex flex-wrap items-center gap-2 w-full sm:w-auto"
-                    >
+                    <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                         <button
                             type="button"
                             @click="closeDetailModal"
@@ -4619,9 +4585,7 @@ const getCatatanAtasanList = (item) => {
                             <span
                                 class="text-sm font-bold text-slate-800 text-right"
                             >
-                                {{
-                                    formatDate(approveModal.item.tanggal_mulai)
-                                }}
+                                {{ formatDate(approveModal.item.tanggal_mulai) }}
                                 s/d
                                 {{
                                     formatDate(
@@ -4666,11 +4630,7 @@ const getCatatanAtasanList = (item) => {
                         :disabled="approveModal.processing"
                         class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold transition shadow-md shadow-emerald-600/30 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                        {{
-                            approveModal.processing
-                                ? "Memproses..."
-                                : "Ya, Setujui"
-                        }}
+                        {{ approveModal.processing ? "Memproses..." : "Ya, Setujui" }}
                     </button>
                 </div>
             </div>
@@ -4734,9 +4694,7 @@ const getCatatanAtasanList = (item) => {
                 </div>
 
                 <div class="p-5 space-y-4" v-if="rejectModal.item">
-                    <p
-                        class="text-sm font-medium text-slate-700 leading-relaxed"
-                    >
+                    <p class="text-sm font-medium text-slate-700 leading-relaxed">
                         Silakan berikan alasan atau catatan mengapa pengajuan
                         cuti ini ditolak. Alasan ini akan dibaca oleh pegawai
                         yang bersangkutan.
@@ -4799,7 +4757,9 @@ const getCatatanAtasanList = (item) => {
                             for="alasan-penolakan-dashboard"
                             class="block text-[11px] font-extrabold uppercase tracking-wider mb-1.5"
                             :class="
-                                rejectError ? 'text-red-600' : 'text-slate-500'
+                                rejectError
+                                    ? 'text-red-600'
+                                    : 'text-slate-500'
                             "
                         >
                             Alasan Penolakan
@@ -4856,14 +4816,12 @@ const getCatatanAtasanList = (item) => {
                         :disabled="rejectModal.processing"
                         class="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-bold transition shadow-md shadow-red-600/30 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                        {{
-                            rejectModal.processing
-                                ? "Mengirim..."
-                                : "Kirim Penolakan"
-                        }}
+                        {{ rejectModal.processing ? "Mengirim..." : "Kirim Penolakan" }}
                     </button>
                 </div>
             </div>
         </div>
     </Teleport>
 </template>
+
+

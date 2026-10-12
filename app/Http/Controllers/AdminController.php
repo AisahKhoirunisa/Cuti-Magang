@@ -317,8 +317,8 @@ class AdminController extends Controller
             return null;
         }
 
-        $tahunTmt = (int)substr($nip, 8, 4);
-        $bulanTmt = (int)substr($nip, 12, 2);
+        $tahunTmt = (int) substr($nip, 8, 4);
+        $bulanTmt = (int) substr($nip, 12, 2);
 
         if ($bulanTmt < 1 || $bulanTmt > 12) {
             return null;
@@ -441,7 +441,7 @@ class AdminController extends Controller
                 $kelompokIni = $this->kunciTeks($namaKelompok) === $kunciKelompok;
 
                 if ($kelompokIni && empty($daftarTim)) {
-                    $pesan = "Kelompok ini tidak memiliki tim kerja. Kosongkan kolom Tim Kerja.";
+                    $pesan = 'Kelompok ini tidak memiliki tim kerja. Kosongkan kolom Tim Kerja.';
                     break;
                 }
 
@@ -679,6 +679,9 @@ class AdminController extends Controller
     // memunculkan pop-up info "Tidak Bisa Dihapus". Aturannya memakai helper
     // yang sama dengan destroyPegawai().
     //
+    // [BARU] Setiap pegawai juga membawa `tanggal_masuk_form` (string Y-m-d atau
+    // null) untuk kolom Tanggal Masuk (TMT) di form edit KelolaPegawai.vue.
+    //
     // Props dropdown untuk KelolaPegawai.vue:
     //   - daftarKelompok         : daftar unik Kelompok Substansi.
     //   - daftarTimKerja         : daftar unik Tim Kerja dari seluruh kelompok.
@@ -717,6 +720,13 @@ class AdminController extends Controller
         $pegawai->each(function ($p) use ($idBerRiwayatCuti) {
             $p->bisa_dihapus = !in_array($p->id, $idBerRiwayatCuti, true)
                 && $this->akunMasihBaru($p);
+
+            // [BARU] Format Y-m-d untuk <input type="date">. Jangan pakai
+            // tanggal_masuk mentah karena JSON-nya berformat ISO UTC dan bisa
+            // mundur sehari.
+            $p->tanggal_masuk_form = $p->tanggal_masuk
+                ? Carbon::parse($p->tanggal_masuk)->toDateString()
+                : null;
         });
 
         // Bangun opsi dropdown: STRUKTUR_ORGANISASI (Excel) + data di database
@@ -935,6 +945,24 @@ class AdminController extends Controller
         $this->rapikanDanCekKelompokTim($request);
         $this->cekJabatanKetua($request, $pegawai);
 
+        // Tanggal masuk: hormati edit manual; kalau NIP diganti, ikutkan TMT dari NIP baru.
+        $tanggalMasukLama = $pegawai->tanggal_masuk
+            ? Carbon::parse($pegawai->tanggal_masuk)->toDateString()
+            : null;
+        $tanggalMasukForm = $request->filled('tanggal_masuk')
+            ? Carbon::parse($request->tanggal_masuk)->toDateString()
+            : null;
+
+        if ($tanggalMasukForm !== null && $tanggalMasukForm !== $tanggalMasukLama) {
+            // Admin sengaja mengubah tanggal masuk: hormati.
+            $tanggalMasukBaru = $tanggalMasukForm;
+        } elseif ($request->nip !== $pegawai->nip) {
+            // NIP dikoreksi: ikutkan TMT dari NIP baru (null bila NIP tidak terbaca).
+            $tanggalMasukBaru = $this->extractTanggalMasukDariNip($request->nip);
+        } else {
+            $tanggalMasukBaru = $tanggalMasukForm;
+        }
+
         $pegawai->update([
             'nip' => $request->nip,
             'nama' => $request->nama,
@@ -943,7 +971,7 @@ class AdminController extends Controller
             'jabatan' => $request->jabatan,
             'role_id' => $request->role_id,
             'status_aktif' => $request->status_aktif,
-            ...$request->filled('tanggal_masuk') ? ['tanggal_masuk' => $request->tanggal_masuk] : [],
+            ...$tanggalMasukBaru ? ['tanggal_masuk' => $tanggalMasukBaru] : [],
             ...$request->filled('no_telepon') ? ['no_telepon' => $request->no_telepon] : [],
             ...$request->filled('alamat_domisili') ? ['alamat_domisili' => $request->alamat_domisili] : [],
         ]);
@@ -1011,6 +1039,8 @@ class AdminController extends Controller
     //   - NIP sudah ada -> data umum (nama, jabatan, kelompok, tim, role_id,
     //     tanggal_masuk) DIPERBARUI; nip/password/is_first_login tidak disentuh.
     //     Kalau sebelumnya soft-deleted -> di-restore & status kembali 'Aktif'.
+    //     Tanggal masuk yang sudah terisi TIDAK ditimpa, kecuali terlihat
+    //     placeholder (sama dengan tanggal akun dibuat) dan NIP bisa dibaca.
     //   - NIP belum ada -> Pegawai::create() dengan `nip`, `password`, dan
     //     `is_first_login` disertakan LANGSUNG di payload (kolom NOT NULL tanpa
     //     default; riwayat error MySQL 1364 & UniqueConstraintViolation).
@@ -1120,6 +1150,20 @@ class AdminController extends Controller
                     $pegawai->restore();
                     // Pegawai yang dipulihkan otomatis berstatus 'Aktif' lagi
                     $dataUmum['status_aktif'] = 'Aktif';
+                }
+                // Jangan menimpa tanggal masuk yang sudah terisi (bisa hasil koreksi
+                // manual), KECUALI tanggal lama terlihat placeholder (sama dengan
+                // tanggal akun dibuat) dan NIP bisa dibaca.
+                if (!empty($pegawai->tanggal_masuk)) {
+                    $samaDenganDibuat = $pegawai->created_at
+                        && Carbon::parse($pegawai->tanggal_masuk)->toDateString()
+                        === Carbon::parse($pegawai->created_at)->toDateString();
+
+                    $tanggalDariNip = $this->extractTanggalMasukDariNip($nip);
+
+                    if (!($samaDenganDibuat && $tanggalDariNip)) {
+                        unset($dataUmum['tanggal_masuk']);
+                    }
                 }
                 $pegawai->update($dataUmum);
                 $isBaru = false;
@@ -1269,7 +1313,7 @@ class AdminController extends Controller
 
         return Inertia::render('Admin/KelolaSaldo', [
             'pegawai' => $pegawai,
-            'tahun' => $tahun
+            'tahun' => $tahun,
         ]);
     }
 
@@ -1283,7 +1327,7 @@ class AdminController extends Controller
     // siapa, kapan, berapa). Baris histori HANYA dibuat kalau `sisa` benar-benar berubah.
     public function updateSaldo(Request $request, int $id)
     {
-        abort_unless((int) $request->user()->role_id === 5, 403);
+        abort_unless((int) $request->user()->role_id === self::ROLE_ID_ADMIN, 403);
 
         $request->validate([
             'kuota_tahunan' => ['required', 'numeric', 'min:0'],
@@ -1295,10 +1339,13 @@ class AdminController extends Controller
 
         $saldoSebelumnya = SaldoCuti::where('pegawai_id', $id)->where('tahun', $tahun)->first();
         $sisaSebelumnya = $saldoSebelumnya->sisa ?? null;
-        $sisa = $request->has('sisa')
+
+        // [FIX] filled() (bukan has()) supaya input kosong/null tidak menimpa
+        // nilai lama dengan null.
+        $sisa = $request->filled('sisa')
             ? $request->sisa
             : ($saldoSebelumnya->sisa ?? 0);
-        $carryForward = $request->has('carry_forward_normal')
+        $carryForward = $request->filled('carry_forward_normal')
             ? $request->carry_forward_normal
             : ($saldoSebelumnya->carry_forward_normal ?? 0);
 
@@ -1339,7 +1386,7 @@ class AdminController extends Controller
     // error di field 'tahun' (tampil di modal), BUKAN banner sukses.
     public function generateSaldoManual(Request $request)
     {
-        abort_unless((int) $request->user()->role_id === 5, 403);
+        abort_unless((int) $request->user()->role_id === self::ROLE_ID_ADMIN, 403);
 
         $request->validate([
             'tahun' => ['nullable', 'integer', 'between:2000,2100'],
@@ -1428,17 +1475,17 @@ class AdminController extends Controller
         $lastColLetter = Coordinate::stringFromColumnIndex($totalCol);
 
         // ---------- Warna ----------
-        $GREEN_DARK   = '1D9E75';
-        $GREEN_LIGHT  = 'E1F5EE';
+        $GREEN_DARK = '1D9E75';
+        $GREEN_LIGHT = 'E1F5EE';
         $GREEN_HEADER = '97C459';
-        $GREEN_TOTAL  = '639922';
-        $AMBER        = 'FAC775';
-        $BLUE_BADGE   = '85B7EB';
+        $GREEN_TOTAL = '639922';
+        $AMBER = 'FAC775';
+        $BLUE_BADGE = '85B7EB';
         $PURPLE_TINGGI = 'AFA9EC';
-        $PURPLE_MUDA   = 'CECBF6';
-        $GRAY_STAF    = 'D3D1C7';
+        $PURPLE_MUDA = 'CECBF6';
+        $GRAY_STAF = 'D3D1C7';
         $TOTAL_ROW_BG = 'FAEEDA';
-        $ZEBRA        = 'F4F8F0';
+        $ZEBRA = 'F4F8F0';
 
         // ---------- Judul ----------
         $sheet->mergeCells("A1:{$lastColLetter}1");
@@ -1667,7 +1714,7 @@ class AdminController extends Controller
 
         $sheet->freezePane('E' . $dataStartRow);
 
-        $filename = "Rekap_Cuti_Tahunan_{$tahun}_" . date('Y-m-d') . ".xlsx";
+        $filename = "Rekap_Cuti_Tahunan_{$tahun}_" . date('Y-m-d') . '.xlsx';
 
         $writer = new Xlsx($spreadsheet);
 
@@ -1684,7 +1731,7 @@ class AdminController extends Controller
         abort_unless((int) $request->user()->role_id === 6, 403, 'Hanya L4 yang dapat menangguhkan cuti.');
 
         $request->validate([
-            'alasan' => ['required', 'string', 'max:255']
+            'alasan' => ['required', 'string', 'max:255'],
         ]);
 
         $pengajuan = PengajuanCuti::findOrFail($id);
@@ -1700,7 +1747,7 @@ class AdminController extends Controller
 
         if ($saldo) {
             $saldo->update([
-                'sisa' => $saldo->sisa + $pengajuan->jumlah_hari
+                'sisa' => $saldo->sisa + $pengajuan->jumlah_hari,
             ]);
         }
 
@@ -1708,7 +1755,7 @@ class AdminController extends Controller
 
         $pengajuan->update([
             'status' => 'dibatalkan_ditangguhkan',
-            'keterangan' => $keteranganBaru
+            'keterangan' => $keteranganBaru,
         ]);
 
         return back()->with('success', 'Cuti berhasil ditangguhkan dan saldo telah dikembalikan.');
@@ -1722,7 +1769,7 @@ class AdminController extends Controller
             ->paginate(7);
 
         return Inertia::render('Admin/KelolaLibur', [
-            'libur' => $libur
+            'libur' => $libur,
         ]);
     }
 
@@ -1734,7 +1781,7 @@ class AdminController extends Controller
             'keterangan' => ['required', 'string', 'max:255'],
             'is_cuti_bersama' => ['required', 'boolean'],
         ], [
-            'tanggal.unique' => 'Tanggal ini sudah didaftarkan sebagai hari libur.'
+            'tanggal.unique' => 'Tanggal ini sudah didaftarkan sebagai hari libur.',
         ]);
 
         HariLibur::create([
@@ -1784,7 +1831,7 @@ class AdminController extends Controller
             }
 
             $firstCell = strtolower($row[0] ?? '');
-            if (!$headerSkipped && in_array($firstCell, ['tanggal', 'date', 'tgl'])) {
+            if (!$headerSkipped && in_array($firstCell, ['tanggal', 'date', 'tgl'], true)) {
                 $headerSkipped = true;
                 continue;
             }
@@ -1839,6 +1886,7 @@ class AdminController extends Controller
     public function destroyLibur(int $id)
     {
         HariLibur::findOrFail($id)->delete();
+
         return back();
     }
 }

@@ -203,6 +203,7 @@ const form = useForm({
     kelompok_substansi: "",
     tim_kerja: "",
     role_id: 1,
+    tanggal_masuk: "",
     no_telepon: "",
     alamat_domisili: "",
     status_aktif: "Aktif",
@@ -652,6 +653,7 @@ const openEditModal = (item) => {
     // Data lama di kelompok tanpa tim: kosongkan supaya konsisten dengan kunci
     if (kelompokTanpaTim.value) form.tim_kerja = "";
     form.role_id = item.role_id || 1;
+    form.tanggal_masuk = item.tanggal_masuk_form || item.tanggal_masuk || "";
     form.no_telepon = item.no_telepon || "";
     form.alamat_domisili = item.alamat_domisili || "";
     form.status_aktif = item.status_aktif || "Aktif";
@@ -1896,22 +1898,44 @@ onBeforeUnmount(() => {
                                     </p>
                                 </div>
 
-                                <div class="mt-4 md:w-1/3">
-                                    <label for="pegawai-status" class="block text-sm font-medium text-gray-700">
-                                        Status Kepegawaian <span class="text-red-500">*</span>
-                                    </label>
-                                    <select
-                                        id="pegawai-status"
-                                        name="status_aktif"
-                                        v-model="form.status_aktif"
-                                        required
-                                        :class="inputClass('status_aktif')"
-                                    >
-                                        <option v-for="status in daftarStatus" :key="status" :value="status">{{ status }}</option>
-                                    </select>
-                                    <p v-if="form.errors.status_aktif" class="mt-1 text-xs text-red-600">
-                                        {{ form.errors.status_aktif }}
-                                    </p>
+                                <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="pegawai-tanggal-masuk" class="block text-sm font-medium text-gray-700">
+                                            Tanggal Masuk (TMT)
+                                        </label>
+                                        <input
+                                            id="pegawai-tanggal-masuk"
+                                            name="tanggal_masuk"
+                                            type="date"
+                                            v-model="form.tanggal_masuk"
+                                            :class="inputClass('tanggal_masuk')"
+                                        />
+                                        <p class="mt-1 text-xs text-gray-400">
+                                            Kosongkan untuk pegawai baru agar diambil dari NIP. Dipakai untuk
+                                            syarat masa kerja Cuti Besar.
+                                        </p>
+                                        <p v-if="form.errors.tanggal_masuk" class="mt-1 text-xs text-red-600">
+                                            {{ form.errors.tanggal_masuk }}
+                                        </p>
+                                    </div>
+
+                                    <div>
+                                        <label for="pegawai-status" class="block text-sm font-medium text-gray-700">
+                                            Status Kepegawaian <span class="text-red-500">*</span>
+                                        </label>
+                                        <select
+                                            id="pegawai-status"
+                                            name="status_aktif"
+                                            v-model="form.status_aktif"
+                                            required
+                                            :class="inputClass('status_aktif')"
+                                        >
+                                            <option v-for="status in daftarStatus" :key="status" :value="status">{{ status }}</option>
+                                        </select>
+                                        <p v-if="form.errors.status_aktif" class="mt-1 text-xs text-red-600">
+                                            {{ form.errors.status_aktif }}
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
 
@@ -2365,3 +2389,5 @@ onBeforeUnmount(() => {
         </div>
     </MainLayout>
 </template>
+
+
