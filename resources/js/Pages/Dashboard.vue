@@ -1,8 +1,18 @@
 <script setup>
 import MainLayout from "@/Layouts/MainLayout.vue";
 import { Head, usePage, Link, router } from "@inertiajs/vue3";
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import { useTahunFilter } from "@/composables/useTahunFilter";
+
+const isMenungguTahunan = (item) =>
+    String(item?.status ?? "").startsWith("menunggu") &&
+    String(item?.jenis_cuti ?? "")
+        .toLowerCase()
+        .includes("tahunan");
+
+const sisaSetelahDisetujui = (item) =>
+    Number(item?.pegawai?.total_cuti_tersedia ?? 0) -
+    Number(item?.jumlah_hari ?? 0);
 
 const props = defineProps({
     stats: Object,
@@ -51,12 +61,27 @@ const props = defineProps({
         type: Object,
         default: () => ({}),
     },
-    // BARU: tahun yang sudah punya baris saldo (untuk validasi modal Revisi).
     tahun_saldo_tersedia: {
         type: Array,
         default: null,
     },
 });
+
+const page = usePage();
+const user = computed(() => page.props.auth.user);
+
+const isAdminHR = computed(() => user.value.role_id === 5);
+
+const activeTab = ref("tim");
+
+const isPribadiMode = computed(
+    () =>
+        !isAdminHR.value &&
+        (user.value.role_id === 1 || activeTab.value === "pribadi"),
+);
+const tampilKpiTim = computed(
+    () => [2, 3, 4, 5, 6].includes(user.value.role_id) && !isPribadiMode.value,
+);
 
 const getLihatSemuaHref = () => {
     if (user.value.role_id === 1) {
@@ -70,12 +95,7 @@ const getLihatSemuaHref = () => {
     return route("atasan.approval");
 };
 
-const page = usePage();
-const user = computed(() => page.props.auth.user);
-
-const isAdminHR = computed(() => user.value.role_id === 5);
-
-const activeTab = ref("tim");
+const chartTab = ref("tren");
 
 const selectedKelompokSubstansi = ref(props.filter?.kelompok_substansi ?? null);
 
@@ -111,12 +131,67 @@ const applyKelompokSubstansiFilter = () => {
     );
 };
 
-const displayedRecentCuti = computed(() => {
-    const isPribadi =
-        !isAdminHR.value &&
-        (user.value.role_id === 1 || activeTab.value === "pribadi");
+const filterRef = ref(null);
+const dropdownTerbuka = ref(null);
 
-    if (isPribadi) {
+const toggleDropdown = (nama) => {
+    dropdownTerbuka.value = dropdownTerbuka.value === nama ? null : nama;
+};
+
+const pilihKelompok = (nilai) => {
+    selectedKelompokSubstansi.value = nilai;
+    dropdownTerbuka.value = null;
+    applyKelompokSubstansiFilter();
+};
+
+const pilihTahun = (nilai) => {
+    selectedTahun.value = String(nilai);
+    dropdownTerbuka.value = null;
+    applyKelompokSubstansiFilter();
+};
+
+const KELOMPOK_TANPA_NILAI = "-";
+const namaKelompok = (nilai) =>
+    nilai === KELOMPOK_TANPA_NILAI ? "Tanpa Kelompok" : nilai;
+
+const daftarKelompokUrut = computed(() => {
+    const semua = props.listKelompokSubstansi || [];
+    const asli = semua.filter((k) => k !== KELOMPOK_TANPA_NILAI);
+    return semua.includes(KELOMPOK_TANPA_NILAI)
+        ? [...asli, KELOMPOK_TANPA_NILAI]
+        : asli;
+});
+
+const labelKelompok = computed(() =>
+    selectedKelompokSubstansi.value
+        ? namaKelompok(selectedKelompokSubstansi.value)
+        : "Semua Kelompok Substansi",
+);
+
+const labelKelompokSingkat = computed(() =>
+    selectedKelompokSubstansi.value
+        ? namaKelompok(selectedKelompokSubstansi.value)
+        : "Semua Substansi",
+);
+
+const tampilFilterKelompok = computed(
+    () =>
+        [4, 5, 6].includes(user.value.role_id) &&
+        (isAdminHR.value || activeTab.value === "tim"),
+);
+
+const tutupDropdownSaatKlikLuar = (event) => {
+    if (filterRef.value && !filterRef.value.contains(event.target)) {
+        dropdownTerbuka.value = null;
+    }
+};
+onMounted(() => document.addEventListener("click", tutupDropdownSaatKlikLuar));
+onBeforeUnmount(() =>
+    document.removeEventListener("click", tutupDropdownSaatKlikLuar),
+);
+
+const displayedRecentCuti = computed(() => {
+    if (isPribadiMode.value) {
         return props.recentCutiPribadi && props.recentCutiPribadi.length
             ? props.recentCutiPribadi
             : user.value.role_id === 1
@@ -127,14 +202,11 @@ const displayedRecentCuti = computed(() => {
     return props.recentCuti;
 });
 
-// Urutan aktivitas: menunggu aksi saya → baru diproses saya → sisanya.
-// levelForRole: role 2→L1, 3→L2, 4→L3, 6→L4; null = tanpa wewenang approval.
 const levelForRole = computed(() => {
     const map = { 2: 1, 3: 2, 4: 3, 6: 4 };
     return map[user.value.role_id] ?? null;
 });
 
-// Jendela "baru diproses": 24 jam
 const WINDOW_BARU_DIPROSES_MS = 24 * 60 * 60 * 1000;
 
 const isMenungguAksiSaya = (item) => {
@@ -165,7 +237,6 @@ const isBaruDiprosesSaya = (item) => {
     return Date.now() - updatedAt <= WINDOW_BARU_DIPROSES_MS;
 };
 
-// Urut ulang aktivitas (sumber data tetap displayedRecentCuti)
 const sortedDisplayedRecentCuti = computed(() => {
     const list = displayedRecentCuti.value || [];
     if (!levelForRole.value) return list;
@@ -186,6 +257,11 @@ const sortedDisplayedRecentCuti = computed(() => {
     });
 });
 
+const MAKS_AKTIVITAS_MOBILE = 3;
+const recentCutiMobile = computed(() =>
+    (sortedDisplayedRecentCuti.value || []).slice(0, MAKS_AKTIVITAS_MOBILE),
+);
+
 const activeChartIndex = ref(null);
 const toggleChartTooltip = (index) => {
     activeChartIndex.value = activeChartIndex.value === index ? null : index;
@@ -201,7 +277,21 @@ const formatDate = (dateString) => {
     }).format(date);
 };
 
-// Badge status — warna diselaraskan dengan RiwayatPengajuan.vue
+const formatRentang = (item) => {
+    const mulai = formatDate(item?.tanggal_mulai);
+    const selesai = formatDate(item?.tanggal_selesai);
+    return !item?.tanggal_selesai || mulai === selesai
+        ? mulai
+        : `${mulai} - ${selesai}`;
+};
+
+const ringkasKeterangan = (item) => {
+    const teks = item?.keterangan
+        ? String(item.keterangan).split("|")[0].trim()
+        : "";
+    return teks && teks !== "-" ? teks : "";
+};
+
 const formatStatus = (status) => {
     switch (status) {
         case "menunggu_l1":
@@ -249,11 +339,7 @@ const formatStatus = (status) => {
                 text: "Ditangguhkan",
                 class: "bg-slate-200 text-slate-700 border border-slate-300",
             };
-        case "kedaluwarsa":
-            return {
-                text: "Kedaluwarsa",
-                class: "bg-zinc-200 text-zinc-700 border border-zinc-300",
-            };
+
         default:
             return {
                 text: status ? status.replace(/_/g, " ").toUpperCase() : "-",
@@ -264,46 +350,86 @@ const formatStatus = (status) => {
 
 const currentYear = new Date().getFullYear();
 
-const cutiTahunanTerpakai = computed(() => {
-    return props.stats?.cuti_terpakai || 0;
+const tahunKpi = ref(currentYear);
+
+const statsAktif = computed(() => props.stats);
+
+const cutiDikembalikan = computed(
+    () => Number(statsAktif.value?.cuti_dikembalikan ?? 0) || 0,
+);
+
+const cutiDigunakan = computed(
+    () =>
+        Number(
+            statsAktif.value?.cuti_digunakan ??
+                statsAktif.value?.cuti_terpakai ??
+                0,
+        ) || 0,
+);
+
+const cutiDitangguhkan = computed(
+    () => Number(statsAktif.value?.cuti_ditangguhkan ?? 0) || 0,
+);
+
+const cutiTerpakaiTotal = computed(() => {
+    if (statsAktif.value?.cuti_terpakai_total != null) {
+        return Number(statsAktif.value.cuti_terpakai_total) || 0;
+    }
+    return cutiDigunakan.value + cutiDitangguhkan.value;
 });
 
 const kuotaTahunanUtuh = computed(
-    () => Number(props.stats?.kuota_tahunan ?? 12) || 0,
+    () => Number(statsAktif.value?.kuota_tahunan ?? 12) || 0,
 );
 
 const sisaHakBerjalan = computed(
-    () => props.stats?.sisa_kuota_tahun_ini ?? props.stats?.kuota_tahunan ?? 12,
+    () =>
+        statsAktif.value?.sisa_kuota_tahun_ini ??
+        statsAktif.value?.kuota_tahunan ??
+        12,
 );
 
 const sisaDuaTahunLalu = computed(
-    () => props.stats?.sisa_cuti_dua_tahun_lalu ?? 0,
+    () => statsAktif.value?.sisa_cuti_dua_tahun_lalu ?? 0,
 );
 const sisaSatuTahunLalu = computed(
-    () => props.stats?.carry_forward_normal ?? 0,
+    () => statsAktif.value?.carry_forward_normal ?? 0,
 );
 const jatahTahunIniUntukSaldo = computed(
-    () => props.stats?.sisa_kuota_tahun_ini ?? props.stats?.kuota_tahunan ?? 12,
+    () =>
+        statsAktif.value?.sisa_kuota_tahun_ini ??
+        statsAktif.value?.kuota_tahunan ??
+        12,
+);
+const syaratDuaTahunLaluTerpenuhi = computed(
+    () => sisaDuaTahunLalu.value === 12,
+);
+const syaratSatuTahunLaluTerpenuhi = computed(
+    () => sisaSatuTahunLalu.value === 12,
 );
 const akumulasiPenuh = computed(
-    () => sisaDuaTahunLalu.value === 12 && sisaSatuTahunLalu.value === 12,
+    () =>
+        syaratDuaTahunLaluTerpenuhi.value && syaratSatuTahunLaluTerpenuhi.value,
 );
 
 const saldoBawaanEligible = computed(() => {
-    if (props.stats?.saldo_bawaan_eligible != null) {
-        return Number(props.stats.saldo_bawaan_eligible) || 0;
+    if (statsAktif.value?.saldo_bawaan_eligible != null) {
+        return Number(statsAktif.value.saldo_bawaan_eligible) || 0;
     }
     return akumulasiPenuh.value ? 12 : Math.min(6, sisaSatuTahunLalu.value);
 });
 
 const sisaCutiTersedia = computed(() => {
-    if (props.stats?.total_cuti_tersedia != null) {
-        return Number(props.stats.total_cuti_tersedia) || 0;
+    if (statsAktif.value?.total_cuti_tersedia != null) {
+        return Number(statsAktif.value.total_cuti_tersedia) || 0;
     }
-    return sisaHakBerjalan.value + saldoBawaanEligible.value;
+    return (
+        sisaHakBerjalan.value +
+        saldoBawaanEligible.value +
+        cutiDikembalikan.value
+    );
 });
 
-// Alias (nilai sama dengan computed di atas)
 const jatahCutiBerjalan = sisaHakBerjalan;
 const totalCutiTersedia = sisaCutiTersedia;
 
@@ -313,7 +439,7 @@ const pctOf12 = (nilai) => {
 };
 
 const barisSaldoTahunan = computed(() => {
-    const saldoTahunan = props.stats?.saldo_tahunan;
+    const saldoTahunan = statsAktif.value?.saldo_tahunan;
     if (Array.isArray(saldoTahunan) && saldoTahunan.length > 0) {
         return saldoTahunan.map((baris, index) => ({
             tahun: baris.tahun,
@@ -321,16 +447,26 @@ const barisSaldoTahunan = computed(() => {
             barClass:
                 index === saldoTahunan.length - 1
                     ? "bg-emerald-400"
-                    : index === saldoTahunan.length - 2
-                      ? "bg-orange-400"
-                      : "bg-orange-400",
+                    : "bg-orange-400",
         }));
     }
 
     return [
-        { tahun: currentYear - 2, nilai: sisaDuaTahunLalu.value, barClass: "bg-orange-400" },
-        { tahun: currentYear - 1, nilai: sisaSatuTahunLalu.value, barClass: "bg-orange-400" },
-        { tahun: currentYear, nilai: jatahTahunIniUntukSaldo.value, barClass: "bg-emerald-400" },
+        {
+            tahun: tahunKpi.value - 2,
+            nilai: sisaDuaTahunLalu.value,
+            barClass: "bg-orange-400",
+        },
+        {
+            tahun: tahunKpi.value - 1,
+            nilai: sisaSatuTahunLalu.value,
+            barClass: "bg-orange-400",
+        },
+        {
+            tahun: tahunKpi.value,
+            nilai: jatahTahunIniUntukSaldo.value,
+            barClass: "bg-emerald-400",
+        },
     ];
 });
 
@@ -345,13 +481,14 @@ const headerSubtitle = computed(() =>
         : "Pantau sisa cuti dan kelola permohonan Anda dengan mudah hari ini.",
 );
 
-const toDateOnlyString = (dateValue) => {
-    const date = new Date(dateValue);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `year-{month}-${day}`;
+const toDateStr = (date) => {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
 };
+
+const toDateOnlyString = (dateValue) => toDateStr(new Date(dateValue));
 
 const totalAnggota = computed(() => {
     return Array.isArray(props.anggotaTim) ? props.anggotaTim.length : 0;
@@ -448,14 +585,10 @@ const chartData = computed(() => {
         breakdown: { tahunan: 0, melahirkan: 0, alasan_penting: 0, besar: 0 },
     }));
 
-    const isPribadiMode =
-        !isAdminHR.value &&
-        (user.value.role_id === 1 || activeTab.value === "pribadi");
-
     let sourceCuti = [];
     let sourceChart = [];
 
-    if (isPribadiMode) {
+    if (isPribadiMode.value) {
         sourceCuti = props.cutiDisetujuiPribadiChart || [];
         sourceChart = props.chartDataPribadi || [];
     } else {
@@ -596,7 +729,6 @@ const donutGradient = computed(() => {
     return `conic-gradient(${parts.join(", ")})`;
 });
 
-// Donut interaktif: hover/tap segmen → tampilkan jumlah hari
 const hoveredDonutSegment = ref(null);
 
 const donutSegments = computed(() => {
@@ -650,20 +782,59 @@ const clearHoveredDonutSegment = () => {
     hoveredDonutSegment.value = null;
 };
 
-// Toggle tooltip donut (untuk touch / klik)
 const toggleDonutSegment = (segment) => {
     hoveredDonutSegment.value =
         hoveredDonutSegment.value?.key === segment.key ? null : segment;
 };
 
-// Posisi tooltip di tengah busur segmen donut
+const legendaDonut = computed(() => [
+    {
+        key: "tahunan",
+        label: "Tahunan",
+        dot: "bg-emerald-400",
+        aktif: "bg-emerald-50",
+        persen: distribusiCuti.value.percentTahunan,
+    },
+    {
+        key: "melahirkan",
+        label: "Melahirkan",
+        dot: "bg-pink-400",
+        aktif: "bg-pink-50",
+        persen: distribusiCuti.value.percentMelahirkan,
+    },
+    {
+        key: "penting",
+        label: "Penting",
+        dot: "bg-orange-400",
+        aktif: "bg-orange-50",
+        persen: distribusiCuti.value.percentPenting,
+    },
+    {
+        key: "besar",
+        label: "Besar",
+        dot: "bg-blue-400",
+        aktif: "bg-blue-50",
+        persen: distribusiCuti.value.percentBesar,
+    },
+]);
+
+const segmenByKey = (key) => donutSegments.value.find((s) => s.key === key);
+const hoverLegenda = (key) => {
+    const seg = segmenByKey(key);
+    if (seg) setHoveredDonutSegment(seg);
+};
+const klikLegenda = (key) => {
+    const seg = segmenByKey(key);
+    if (seg) toggleDonutSegment(seg);
+};
+
 const donutTooltipStyle = computed(() => {
     const segment = hoveredDonutSegment.value;
     if (!segment) return {};
 
     const midPercent = segment.start + segment.percent / 2;
     const angleRad = (midPercent / 100) * 2 * Math.PI;
-    const radius = 50; // px, jarak titik tooltip dari titik tengah donut
+    const radius = 50;
     const x = Math.sin(angleRad) * radius;
     const y = -Math.cos(angleRad) * radius;
 
@@ -673,12 +844,48 @@ const donutTooltipStyle = computed(() => {
     };
 });
 
+const normalisasiLibur = (libur) => {
+    const ket = String(libur.keterangan || "");
+
+    const isCutiBersama = Boolean(libur.is_cuti_bersama);
+
+    const isProyeksi = /proyeksi/i.test(ket);
+    const judul =
+        ket
+            .replace(/\(\s*proyeksi[^)]*\)/i, "")
+            .replace(/\s{2,}/g, " ")
+            .trim() || ket;
+
+    const tgl = new Date(`${libur.tanggal}T00:00:00`);
+    const valid = !Number.isNaN(tgl.getTime());
+
+    return {
+        id: libur.id ?? libur.tanggal,
+        tanggal: libur.tanggal,
+        judul,
+        isCutiBersama,
+        isProyeksi,
+        jenisLabel: isCutiBersama ? "Cuti Bersama" : "Libur Nasional",
+        hari: valid ? String(tgl.getDate()).padStart(2, "0") : "-",
+        bulan: valid
+            ? new Intl.DateTimeFormat("id-ID", { month: "short" })
+                  .format(tgl)
+                  .toUpperCase()
+            : "",
+        namaHari: valid
+            ? new Intl.DateTimeFormat("id-ID", { weekday: "long" }).format(tgl)
+            : "",
+        tahun: valid ? tgl.getFullYear() : "",
+    };
+};
+
 const upcomingHolidays = computed(() => {
-    const todayStr = new Date().toISOString().split("T")[0];
+    const todayStr = toDateOnlyString(new Date());
     if (!props.hariLiburs) return [];
     return props.hariLiburs
         .filter((item) => item.tanggal >= todayStr)
-        .slice(0, 3);
+        .slice(0, 3)
+        .map(normalisasiLibur);
 });
 
 const cutiDisetujuiBulanIniList = computed(() => {
@@ -700,19 +907,10 @@ const startOfWeek = computed(() => {
     return new Date(date.setDate(diff));
 });
 
-const currentMonthYear = computed(() => {
-    return new Intl.DateTimeFormat("id-ID", {
-        month: "long",
-        year: "numeric",
-    }).format(baseDate.value);
-});
-
 const weekRangeLabel = computed(() => {
     const start = startOfWeek.value;
     const end = new Date(start);
     end.setDate(end.getDate() + 6);
-    const fmt = (d) =>
-        `${d.getDate()} ${new Intl.DateTimeFormat("id-ID", { month: "long" }).format(d)} ${d.getFullYear()}`;
     return `${start.getDate()} - ${end.getDate()} ${new Intl.DateTimeFormat("id-ID", { month: "long" }).format(end)} ${end.getFullYear()}`;
 });
 
@@ -720,12 +918,11 @@ const weekDays = computed(() => {
     const daysName = ["SEN", "SEL", "RAB", "KAM", "JUM", "SAB", "MIN"];
     const result = [];
     let current = new Date(startOfWeek.value);
-    const todayObj = new Date();
-    const todayStr = `todayObj.getFullYear()-{String(todayObj.getMonth() + 1).padStart(2, "0")}-${String(todayObj.getDate()).padStart(2, "0")}`;
+    const todayStr = toDateStr(new Date());
 
     for (let i = 0; i < 7; i++) {
         const dateObj = new Date(current);
-        const dateStr = `dateObj.getFullYear()-{String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
+        const dateStr = toDateStr(dateObj);
 
         const onLeave = props.cutiDisetujuiData
             ? props.cutiDisetujuiData.filter(
@@ -746,6 +943,17 @@ const weekDays = computed(() => {
         current.setDate(current.getDate() + 1);
     }
     return result;
+});
+
+const cutiMingguIniCount = computed(() => {
+    const ids = new Set();
+    weekDays.value.forEach((day) => {
+        if (day.isWeekend) return;
+        day.onLeave.forEach((cuti) => {
+            ids.add(cuti.pegawai_id ?? cuti.pegawai?.id ?? cuti.id);
+        });
+    });
+    return ids.size;
 });
 
 const prevWeek = () => {
@@ -791,10 +999,6 @@ const formRevisi = ref({
     tanggal_selesai: "",
 });
 
-// ================= SALDO TAHUN BELUM ADA (MODAL REVISI) =================
-// Tahun PERTAMA dalam rentang tanggal revisi yang saldonya belum dibuat
-// Admin HR (khusus Cuti Tahunan). Peringatan dini saja; backend
-// (CutiController::revisi) tetap penjaga akhir.
 const revisiError = ref("");
 
 const tahunTanpaSaldoRevisi = computed(() => {
@@ -819,7 +1023,6 @@ const tahunTanpaSaldoRevisi = computed(() => {
     return null;
 });
 
-// Hapus pesan error server tiap kali modal/tanggal berubah.
 watch(
     () => [
         detailModal.value.show,
@@ -831,13 +1034,9 @@ watch(
         revisiError.value = "";
     },
 );
-// ================= END SALDO TAHUN BELUM ADA (MODAL REVISI) =================
 
 const isStatusBisaDirevisi = (item) => {
-    return (
-        item?.status === "ditangguhkan" ||
-        item?.status === "dibatalkan_ditangguhkan"
-    );
+    return item?.bisa_direvisi === true;
 };
 
 const canRevisiCurrentItem = computed(() => {
@@ -884,17 +1083,39 @@ const cancelRevisiMode = () => {
     formRevisi.value.tanggal_selesai = "";
 };
 
-const minDate = computed(() => {
-    const today = new Date();
-    return today.toISOString().split("T")[0];
+const minDate = computed(() => toDateStr(new Date()));
+
+const MAKS_RENTANG_HARI = 92;
+const MAKS_MULAI_TAHUN_KE_DEPAN = 2;
+
+const maxTanggalMulaiRevisi = computed(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() + MAKS_MULAI_TAHUN_KE_DEPAN);
+    return toDateStr(d);
 });
 
-const toDateStr = (date) => {
-    const yyyy = date.getFullYear();
-    const mm = String(date.getMonth() + 1).padStart(2, "0");
-    const dd = String(date.getDate()).padStart(2, "0");
-    return `yyyy-{mm}-${dd}`;
-};
+const maxTanggalSelesaiRevisi = computed(() => {
+    const batasGlobal = maxTanggalMulaiRevisi.value;
+    if (!formRevisi.value.tanggal_mulai) return batasGlobal;
+    const m = new Date(`${formRevisi.value.tanggal_mulai}T00:00:00`);
+    m.setDate(m.getDate() + (MAKS_RENTANG_HARI - 1));
+    const maxDariMulai = toDateStr(m);
+    return maxDariMulai < batasGlobal ? maxDariMulai : batasGlobal;
+});
+
+watch(
+    () => formRevisi.value.tanggal_mulai,
+    (val) => {
+        if (!val || !formRevisi.value.tanggal_selesai) return;
+        if (formRevisi.value.tanggal_selesai < val) {
+            formRevisi.value.tanggal_selesai = val;
+        } else if (
+            formRevisi.value.tanggal_selesai > maxTanggalSelesaiRevisi.value
+        ) {
+            formRevisi.value.tanggal_selesai = maxTanggalSelesaiRevisi.value;
+        }
+    },
+);
 
 const hariLiburSet = computed(
     () => new Set((props.hariLiburs || []).map((hari) => hari.tanggal)),
@@ -983,8 +1204,6 @@ const submitRevisi = () => {
             onSuccess: () => {
                 closeDetailModal();
             },
-            // Error validasi dari server (mis. saldo tahun belum ada)
-            // ditampilkan di dalam modal, modal TIDAK ditutup.
             onError: (errors) => {
                 revisiError.value =
                     errors.tanggal_mulai ||
@@ -1010,7 +1229,7 @@ const submitSuspend = () => {
         return;
     }
     router.post(
-        route("admin.cuti.tangguhkan", suspendData.value.id),
+        route("atasan.penangguhan.process", suspendData.value.id),
         { alasan: suspendData.value.alasan },
         { preserveScroll: true, onSuccess: () => closeSuspendModal() },
     );
@@ -1027,7 +1246,6 @@ const onLeaveTeamMembers = computed(() => {
     return selectedDateForModal.value.onLeave;
 });
 
-// Modal konfirmasi setuju / tolak (pengganti window.confirm & prompt)
 const approveModal = ref({ show: false, item: null, processing: false });
 const openApproveModal = (item) => {
     approveModal.value = { show: true, item, processing: false };
@@ -1036,7 +1254,7 @@ const closeApproveModal = () => {
     approveModal.value = { show: false, item: null, processing: false };
 };
 const confirmApproveCuti = () => {
-    if (approveModal.value.processing) return; // guard: sudah diproses, abaikan klik berikutnya
+    if (approveModal.value.processing) return;
     const item = approveModal.value.item;
     if (!item?.id) return;
 
@@ -1048,37 +1266,41 @@ const confirmApproveCuti = () => {
         {
             preserveScroll: true,
             onSuccess: () => {
-                // Auto-close: tutup modal konfirmasi + Detail Modal di belakangnya
                 closeApproveModal();
                 closeDetailModal();
             },
             onFinish: () => {
-                // Selalu dijalankan (baik sukses maupun error) supaya modal
-                // tidak "terkunci" processing jika request gagal.
                 approveModal.value.processing = false;
             },
         },
     );
 };
 
-// [FIX DOUBLE-SUBMIT] Sama seperti approveModal: "processing" mencegah
-// klik ganda pada tombol "Kirim Penolakan" mengirim dua request sekaligus.
-const rejectModal = ref({ show: false, item: null, alasan: "", processing: false });
+const rejectModal = ref({
+    show: false,
+    item: null,
+    alasan: "",
+    processing: false,
+});
 const rejectError = ref(false);
 const openRejectModal = (item) => {
     rejectModal.value = { show: true, item, alasan: "", processing: false };
     rejectError.value = false;
 };
 const closeRejectModal = () => {
-    rejectModal.value = { show: false, item: null, alasan: "", processing: false };
+    rejectModal.value = {
+        show: false,
+        item: null,
+        alasan: "",
+        processing: false,
+    };
     rejectError.value = false;
 };
 const confirmRejectCuti = () => {
-    if (rejectModal.value.processing) return; // guard: sudah diproses, abaikan klik berikutnya
+    if (rejectModal.value.processing) return;
     const item = rejectModal.value.item;
     if (!item?.id) return;
 
-    // Alasan penolakan WAJIB diisi — tampilkan error inline, jangan kirim request
     if (!rejectModal.value.alasan || !String(rejectModal.value.alasan).trim()) {
         rejectError.value = true;
         return;
@@ -1092,7 +1314,6 @@ const confirmRejectCuti = () => {
         {
             preserveScroll: true,
             onSuccess: () => {
-                // Auto-close: tutup modal konfirmasi + Detail Modal di belakangnya
                 closeRejectModal();
                 closeDetailModal();
             },
@@ -1103,7 +1324,6 @@ const confirmRejectCuti = () => {
     );
 };
 
-// Cari item di recentCuti lalu buka modal setuju/tolak
 const approveCuti = (id) => {
     const item =
         detailModal.value.data && detailModal.value.data.id === id
@@ -1182,7 +1402,6 @@ const getCatatanAtasan = (item) => {
     return responses[item?.status] || "Diproses tanpa catatan tambahan.";
 };
 
-// Pembatalan mandiri (dibatalkan_reguler): tampilkan catatan pemohon
 const getNamaPembatal = (item) => {
     return (
         item?.dibatalkan_oleh?.nama ||
@@ -1192,7 +1411,6 @@ const getNamaPembatal = (item) => {
     );
 };
 
-// Ambil catatan pembatalan mandiri dari keterangan / field khusus
 const getCatatanPembatalanReguler = (item) => {
     if (item?.keterangan && item.keterangan.includes("|")) {
         return item.keterangan
@@ -1218,7 +1436,6 @@ const isStatusDitangguhkan = (item) =>
     item?.status === "ditangguhkan" ||
     item?.status === "dibatalkan_ditangguhkan";
 
-// dibatalkan_reguler = dibatalkan sendiri oleh pemohon
 const isStatusDibatalkanReguler = (item) =>
     item?.status === "dibatalkan_reguler" || item?.status === "dibatalkan";
 
@@ -1265,7 +1482,6 @@ const getApprovalLevelLabel = (level) =>
         4: "L4 - Kepala Biro Perencanaan",
     })[level] || `Level ${level}`;
 
-// Label level singkat untuk badge modal detail (mis. MENUNGGU L3)
 const getStatusBadgeLabelSingkat = (status) => {
     if (!status) return "STATUS";
 
@@ -1279,13 +1495,12 @@ const getStatusBadgeLabelSingkat = (status) => {
         ditangguhkan: "DITANGGUHKAN",
         dibatalkan_ditangguhkan: "DITANGGUHKAN",
         dibatalkan_reguler: "DIBATALKAN",
-        kedaluwarsa: "KEDALUWARSA",
+        
     };
 
     return levelMap[status] || status.replace(/_/g, " ").toUpperCase();
 };
 
-// Catatan / respon atasan per level (L1–L4), dinamis sesuai rantai approval
 const LEVEL_JABATAN_MAP = {
     1: "Ketua Tim Kerja",
     2: "Ketua Kelompok Substansi",
@@ -1293,8 +1508,6 @@ const LEVEL_JABATAN_MAP = {
     4: "Kepala Biro Perencanaan",
 };
 
-// Nama pejabat yang DITUGASKAN di level tertentu (untuk baris yang masih
-// "Menunggu Persetujuan"). Mencoba beberapa pola nama field yang umum.
 const getNamaPejabatLevel = (item, level) => {
     return (
         item?.[`atasan_l${level}`]?.nama ||
@@ -1313,8 +1526,6 @@ const getNamaPejabatLevel = (item, level) => {
     );
 };
 
-// Level PERTAMA yang dilalui pengajuan ini: 1, 2, 3, 4, atau null kalau
-// tidak terdeteksi (fallback aman ke [3,4] di getLevelsToShowUntukItem).
 const getLevelAwalUntukItem = (item) => {
     if (!item) return null;
 
@@ -1327,18 +1538,15 @@ const getLevelAwalUntukItem = (item) => {
         return Math.min(...levelLogValid);
     }
 
-    // Belum ada log sama sekali -> pengajuan masih di level pertamanya,
-    // jadi level awal = level yang sedang ditunggu sekarang.
     const pendingMatch = item?.status?.match(/^menunggu_l(\d)$/);
     if (pendingMatch) return parseInt(pendingMatch[1], 10);
 
     return null;
 };
 
-// Level untuk blok Catatan / Respon Atasan
 const getLevelsToShowUntukItem = (item) => {
     const levelAwal = getLevelAwalUntukItem(item);
-    if (levelAwal === null) return [3, 4]; // fallback aman
+    if (levelAwal === null) return [3, 4];
     if (levelAwal <= 2) return [levelAwal, 3, 4];
     if (levelAwal === 3) return [3, 4];
     return [4];
@@ -1347,10 +1555,8 @@ const getLevelsToShowUntukItem = (item) => {
 const getCatatanAtasanList = (item) => {
     if (!item) return [];
 
-    // Sertakan juga status ditolak agar catatan penolak tetap tampil
     const levelsToShow = getLevelsToShowUntukItem(item);
 
-    // 1) Jika backend sudah mengirim struktur approvals siap pakai.
     if (Array.isArray(item.approvals) && item.approvals.length) {
         return item.approvals
             .filter((a) => levelsToShow.includes(Number(a.level)))
@@ -1381,7 +1587,6 @@ const getCatatanAtasanList = (item) => {
             });
     }
 
-    // 2) Fallback: rakit dari approval_logs (levelsToShow yang dinamis).
     const logs = getApprovalLogs(item);
 
     const hasil = [];
@@ -1410,7 +1615,6 @@ const getCatatanAtasanList = (item) => {
                 catatan: log.catatan || null,
             });
         } else {
-            // Belum ada log di level ini
             hasil.push({
                 key: level,
                 level,
@@ -1423,7 +1627,6 @@ const getCatatanAtasanList = (item) => {
         }
     }
 
-    // Kembalikan semua level di levelsToShow (termasuk ditolak)
     return hasil;
 };
 </script>
@@ -1444,9 +1647,7 @@ const getCatatanAtasanList = (item) => {
                 <div
                     class="absolute inset-0 bg-gradient-to-r from-emerald-950/90 via-emerald-900/55 to-transparent"
                 ></div>
-                <div
-                    class="relative max-w-2xl px-5 pt-8 pb-4 md:px-8 md:py-14"
-                >
+                <div class="relative max-w-2xl px-5 pt-8 pb-4 md:px-8 md:py-14">
                     <p
                         class="text-[10px] font-extrabold uppercase tracking-[0.2em] text-emerald-200"
                     >
@@ -1467,35 +1668,20 @@ const getCatatanAtasanList = (item) => {
                     >
                         {{ headerSubtitle }}
                     </p>
-                    <p
-                        class="mt-1 max-w-xl text-xs font-medium leading-relaxed text-emerald-50/75 md:text-sm"
-                    >
-                        Pantau ketersediaan, pengajuan, dan aktivitas tim dari
-                        satu dashboard.
-                    </p>
                 </div>
                 <div
                     v-if="[1, 2, 3, 4, 6].includes(user.role_id)"
                     class="relative px-5 pb-8 md:absolute md:right-16 md:top-1/2 md:-translate-y-1/2 md:p-0"
                 >
-                    <!-- TOMBOL "AJUKAN CUTI" — desain TIMBUL (3D) modern:
-                         - bentuk pill (rounded-full) dengan gradasi putih -> hijau muda
-                         - kilau glossy di bagian atas (span "shine")
-                         - "tebal" tombol di bawah lewat shadow 0_6px_0 (efek timbul)
-                         - ikon plus di dalam lingkaran hijau yang juga timbul
-                         - hover: naik sedikit + glow; active: menekan ke bawah
-                         Hanya tampilan yang berubah, link & aksi tetap sama. -->
                     <Link
                         :href="route('karyawan.ajukan')"
                         class="group relative inline-flex items-center gap-3 overflow-hidden rounded-full border-2 border-white bg-gradient-to-b from-white via-emerald-50 to-emerald-200 py-2.5 pl-2.5 pr-5 text-xs md:py-3 md:pl-3 md:pr-7 md:text-[13px] font-black uppercase tracking-wider text-emerald-950 shadow-[inset_0_2px_2px_rgba(255,255,255,1),inset_0_-4px_8px_rgba(16,185,129,0.35),0_0_0_4px_rgba(255,255,255,0.22),0_7px_0_#10b981,0_16px_28px_rgba(2,44,34,0.55),0_0_36px_rgba(110,231,183,0.55)] transition-all duration-150 hover:-translate-y-0.5 hover:shadow-[inset_0_2px_2px_rgba(255,255,255,1),inset_0_-4px_8px_rgba(16,185,129,0.35),0_0_0_5px_rgba(255,255,255,0.3),0_9px_0_#10b981,0_20px_34px_rgba(2,44,34,0.55),0_0_48px_rgba(110,231,183,0.8)] active:translate-y-[5px] active:shadow-[inset_0_2px_3px_rgba(6,78,59,0.25),0_0_0_4px_rgba(255,255,255,0.22),0_2px_0_#10b981,0_6px_12px_rgba(2,44,34,0.4),0_0_28px_rgba(110,231,183,0.5)] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
                     >
-                        <!-- kilau glossy di sisi atas tombol -->
                         <span
                             aria-hidden="true"
                             class="pointer-events-none absolute inset-x-5 top-1 h-1/2 rounded-full bg-gradient-to-b from-white to-transparent"
                         ></span>
 
-                        <!-- lingkaran ikon plus yang ikut timbul -->
                         <span
                             class="relative flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-b from-emerald-400 to-emerald-600 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.6),0_3px_6px_rgba(5,150,105,0.6)] transition-transform duration-150 group-hover:rotate-90"
                         >
@@ -1537,9 +1723,7 @@ const getCatatanAtasanList = (item) => {
                 </div>
                 <div
                     class="bg-slate-50 p-1 rounded-xl flex w-full sm:w-auto sm:inline-flex border border-slate-100"
-                    
                 >
-                    <!-- Urutan tombol dibalik: Tim / Bawahan di kiri, Pribadi di kanan -->
                     <button
                         @click="activeTab = 'tim'"
                         :class="
@@ -1577,85 +1761,71 @@ const getCatatanAtasanList = (item) => {
                 </div>
             </div>
 
-            <div
-                v-show="
-                    !isAdminHR &&
-                    (user.role_id === 1 || activeTab === 'pribadi')
-                "
-                class="w-full"
-            >
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
+            <div v-if="isPribadiMode" class="w-full">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-5">
                     <div
-                        class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col min-h-[180px] hover:shadow-md transition-all"
+                        class="bg-white rounded-2xl border border-slate-200 shadow-sm p-3.5 md:p-5 flex flex-col md:min-h-[180px] hover:shadow-md transition-all"
                     >
                         <h3
-                            class="text-[11px] font-bold text-slate-800 tracking-wider uppercase"
+                            class="text-[10px] md:text-[11px] font-bold text-slate-800 tracking-wider uppercase leading-tight"
                         >
-                            Jatah Cuti {{ currentYear }}
+                            Hak Cuti {{ tahunKpi }}
                         </h3>
                         <div
-                            class="flex-1 flex flex-row items-center justify-between gap-3 mt-1"
+                            class="flex-1 flex flex-row items-center justify-between gap-2 md:gap-3 mt-1"
                         >
-                            <div class="text-left">
-                                <div class="flex items-baseline gap-1">
-                                    <span
-                                        class="text-5xl font-extrabold text-slate-800 tracking-tight"
-                                    >
-                                        {{ kuotaTahunanUtuh }}
-                                    </span>
-                                    <span
-                                        class="text-sm font-semibold text-slate-400"
-                                        >hari</span
-                                    >
-                                </div>
-                                <p
-                                    class="text-[11px] text-slate-400 mt-2 font-medium"
+                            <div class="flex items-baseline gap-1">
+                                <span
+                                    class="text-3xl md:text-5xl font-extrabold text-slate-800 tracking-tight"
                                 >
-                                    Maksimum
-                                    {{ kuotaTahunanUtuh }} hari/tahun
-                                </p>
+                                    {{ kuotaTahunanUtuh }}
+                                </span>
+                                <span
+                                    class="text-xs md:text-sm font-semibold text-slate-400"
+                                    >hari</span
+                                >
                             </div>
                             <div class="shrink-0">
                                 <img
                                     src="/images/kalender-3d.png"
-                                    alt="Jatah Cuti"
-                                    class="w-16 h-16 object-contain"
+                                    alt="Hak Cuti"
+                                    class="w-9 h-9 md:w-16 md:h-16 object-contain"
                                 />
                             </div>
                         </div>
+                        <p
+                            class="mt-2 pt-2 border-t border-slate-100 text-[10px] md:text-[11px] font-medium leading-snug text-slate-500"
+                        >
+                            Maksimum {{ kuotaTahunanUtuh }} hari/tahun
+                        </p>
                     </div>
 
                     <div
-                        class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col min-h-[180px] hover:shadow-md transition-all"
+                        class="bg-white rounded-2xl border border-slate-200 shadow-sm p-3.5 md:p-5 flex flex-col md:min-h-[180px] hover:shadow-md transition-all"
                     >
                         <h3
-                            class="text-[11px] font-bold text-slate-800 tracking-wider uppercase"
+                            class="text-[10px] md:text-[11px] font-bold text-slate-800 tracking-wider uppercase leading-tight"
                         >
                             Cuti Terpakai
                         </h3>
                         <div
-                            class="flex-1 flex flex-row items-center justify-between gap-3 mt-1"
+                            class="flex-1 flex flex-row items-center justify-between gap-2 md:gap-3 mt-1"
                         >
                             <div class="text-left">
                                 <div class="flex items-baseline gap-1">
                                     <span
-                                        class="text-5xl font-extrabold text-slate-800 tracking-tight"
-                                        >{{ cutiTahunanTerpakai }}</span
+                                        class="text-3xl md:text-5xl font-extrabold text-slate-800 tracking-tight"
+                                        >{{ cutiTerpakaiTotal }}</span
                                     >
                                     <span
-                                        class="text-sm font-semibold text-slate-400"
+                                        class="text-xs md:text-sm font-semibold text-slate-400"
                                         >hari</span
                                     >
                                 </div>
                                 <p
-                                    class="text-[11px] text-slate-400 mt-2 font-medium"
-                                >
-                                    Khusus cuti tahunan
-                                </p>
-                                <p
-                                    v-if="stats.ada_koreksi"
-                                    class="mt-1.5 inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-700"
-                                    title="Angka ini telah disesuaikan oleh Admin SDM"
+                                    v-if="statsAktif?.ada_koreksi"
+                                    class="mt-1 text-[10px] md:text-[11px] font-medium leading-tight text-slate-500"
+                                    :title="`Menurut riwayat sistem: ${statsAktif.cuti_terpakai_sistem} hari digunakan. Penyesuaian ${statsAktif.selisih_koreksi > 0 ? '+' : ''}${statsAktif.selisih_koreksi} hari dari Admin SDM.`"
                                 >
                                     ✎ Disesuaikan Admin SDM
                                 </p>
@@ -1664,19 +1834,17 @@ const getCatatanAtasanList = (item) => {
                                 <img
                                     src="/images/ceklis-3d.png"
                                     alt="Cuti Terpakai"
-                                    class="w-16 h-16 object-contain"
+                                    class="w-9 h-9 md:w-16 md:h-16 object-contain"
                                 />
                             </div>
                         </div>
-                        <div
-                            v-if="stats.ada_koreksi"
-                            class="mt-2 pt-2 border-t border-slate-100"
+                        <p
+                            class="mt-2 pt-2 border-t border-slate-100 text-[10px] md:text-[11px] font-medium leading-snug text-slate-500"
+                            :title="`${cutiDigunakan} hari digunakan, ${cutiDitangguhkan} hari ditangguhkan (dikembalikan di ${tahunKpi + 1}).`"
                         >
-                            <p class="text-[10px] text-slate-400 font-medium">
-                                Menurut riwayat sistem: {{ stats.cuti_terpakai_sistem }} hari.
-                                Ada penyesuaian {{ stats.selisih_koreksi > 0 ? "+" : "" }}{{ stats.selisih_koreksi }} hari dari Admin SDM.
-                            </p>
-                        </div>
+                            {{ cutiDigunakan }} digunakan,
+                            {{ cutiDitangguhkan }} ditangguhkan
+                        </p>
                     </div>
 
                     <div
@@ -1687,12 +1855,14 @@ const getCatatanAtasanList = (item) => {
                         aria-label="Buka rincian saldo cuti bawaan"
                         @keydown.enter="openSaldoCutiModal"
                         @keydown.space.prevent="openSaldoCutiModal"
-                        class="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-[180px] cursor-pointer hover:shadow-md transition-all focus:outline-none focus:ring-2 focus:ring-orange-300"
+                        class="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden md:min-h-[180px] cursor-pointer hover:shadow-md transition-all focus:outline-none focus:ring-2 focus:ring-orange-300"
                     >
-                        <div class="p-4 pb-2 flex-1 flex flex-col">
-                            <div class="flex justify-between items-center mb-3">
+                        <div class="p-3.5 md:p-4 pb-2 flex-1 flex flex-col">
+                            <div
+                                class="flex justify-between items-center mb-2 md:mb-3"
+                            >
                                 <h3
-                                    class="text-[11px] font-bold text-orange-500 tracking-wider uppercase"
+                                    class="text-[10px] md:text-[11px] font-bold text-orange-500 tracking-wider uppercase"
                                 >
                                     Sisa Cuti
                                 </h3>
@@ -1748,16 +1918,16 @@ const getCatatanAtasanList = (item) => {
                             </div>
                         </div>
                         <div
-                            class="bg-emerald-50/70 border-t border-emerald-100 px-4 py-2.5 flex justify-between items-center shrink-0"
+                            class="bg-emerald-50/70 border-t border-emerald-100 px-3.5 md:px-4 py-2 md:py-2.5 flex justify-between items-center shrink-0"
                         >
                             <span
                                 class="text-[10px] font-bold text-emerald-700 uppercase tracking-wide leading-tight"
-                                >Saldo<br class="hidden sm:block" />
+                                >Hak<br class="hidden sm:block" />
                                 bawaan eligible</span
                             >
                             <span class="flex items-baseline gap-1">
                                 <span
-                                    class="text-3xl font-extrabold text-emerald-800 leading-none tracking-tight"
+                                    class="text-2xl md:text-3xl font-extrabold text-emerald-800 leading-none tracking-tight"
                                     >{{ saldoBawaanEligible }}</span
                                 >
                                 <span class="text-xs font-bold text-emerald-600"
@@ -1768,96 +1938,94 @@ const getCatatanAtasanList = (item) => {
                     </div>
 
                     <div
-                        class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col min-h-[180px] hover:shadow-md transition-all"
+                        class="bg-white rounded-2xl border border-slate-200 shadow-sm p-3.5 md:p-5 flex flex-col md:min-h-[180px] hover:shadow-md transition-all"
                     >
                         <h3
-                            class="text-[11px] font-bold text-slate-800 tracking-wider uppercase"
+                            class="text-[10px] md:text-[11px] font-bold text-slate-800 tracking-wider uppercase leading-tight"
                         >
                             Total Cuti Tersedia
                         </h3>
                         <div
-                            class="flex-1 flex flex-row items-center justify-between gap-3 mt-1"
+                            class="flex-1 flex flex-row items-center justify-between gap-2 md:gap-3 mt-1"
                         >
-                            <div class="text-left">
-                                <div class="flex items-baseline gap-1">
-                                    <span
-                                        class="text-5xl font-extrabold text-slate-800 tracking-tight"
-                                        >{{ totalCutiTersedia }}</span
-                                    >
-                                    <span
-                                        class="text-sm font-semibold text-slate-400"
-                                        >hari</span
-                                    >
-                                </div>
-                                <p
-                                    class="text-[11px] text-slate-400 mt-2 font-medium"
+                            <div class="flex items-baseline gap-1">
+                                <span
+                                    class="text-3xl md:text-5xl font-extrabold text-slate-800 tracking-tight"
+                                    >{{ totalCutiTersedia }}</span
                                 >
-                                    Siap dipakai kapan saja
-                                </p>
+                                <span
+                                    class="text-xs md:text-sm font-semibold text-slate-400"
+                                    >hari</span
+                                >
                             </div>
                             <div class="shrink-0">
                                 <img
                                     src="/images/jam-3d.png"
                                     alt="Total Cuti Tersedia"
-                                    class="w-16 h-16 object-contain"
+                                    class="w-9 h-9 md:w-16 md:h-16 object-contain"
                                 />
                             </div>
                         </div>
-                        <div class="mt-2 pt-2 border-t border-slate-100">
-                            <p class="text-[10px] text-slate-400 font-medium">
-                                Sisa Hak ({{ jatahCutiBerjalan }}) + Saldo
-                                Bawaan ({{ saldoBawaanEligible }})
-                            </p>
-                        </div>
+                        <p
+                            class="mt-2 pt-2 border-t border-slate-100 text-[10px] md:text-[11px] font-medium leading-snug text-slate-500"
+                            :title="`Total (${totalCutiTersedia}) = Sisa ${tahunKpi} (${jatahCutiBerjalan}) + Bawaan ${tahunKpi} (${saldoBawaanEligible}) + Ditangguhkan ${tahunKpi - 1} (${cutiDikembalikan})`"
+                        >
+                            {{ jatahCutiBerjalan }} sisa +
+                            {{ saldoBawaanEligible }} bawaan +
+                            {{ cutiDikembalikan }} dikembalikan
+                        </p>
                     </div>
                 </div>
 
-                <div class="mt-4 ml-1">
+                <div class="mt-3 md:mt-4 ml-1">
                     <p class="text-[11px] text-slate-400">
-                        Klik kartu "Saldo Cuti" untuk melihat cara perhitungan
-                        bawaan dari {{ currentYear - 2 }} dan
-                        {{ currentYear - 1 }}.
+                        Klik kartu "Sisa Cuti" untuk melihat cara perhitungan
+                        bawaan dari {{ tahunKpi - 2 }} dan {{ tahunKpi - 1 }}.
                     </p>
                 </div>
             </div>
 
-            <div
-                v-show="
-                    activeTab === 'tim' &&
-                    [2, 3, 4, 5, 6].includes(user.role_id)
-                "
-                class="grid grid-cols-1 md:grid-cols-3 gap-4"
-            >
+            <div v-if="tampilKpiTim" class="grid grid-cols-3 gap-2 md:gap-4">
                 <Link
                     :href="route('atasan.approval')"
-                    class="relative overflow-hidden bg-white border border-slate-200/80 rounded-2xl px-5 py-5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 flex flex-col justify-between hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group min-h-[110px]"
+                    class="relative overflow-hidden bg-white border border-slate-200/80 rounded-xl md:rounded-2xl pl-3.5 pr-2.5 py-2.5 md:px-5 md:py-5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 flex flex-col hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group md:min-h-[110px]"
                 >
                     <div
-                        class="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-amber-400 to-orange-400 rounded-l-2xl"
+                        class="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-amber-400 to-orange-400 rounded-l-xl md:rounded-l-2xl"
                     ></div>
                     <img
                         src="/images/icon-dokumen.png"
                         alt=""
                         aria-hidden="true"
-                        class="absolute -right-3 -bottom-3 w-20 h-20 md:w-24 md:h-24 object-contain opacity-90 pointer-events-none select-none transition-transform duration-300 group-hover:scale-105"
+                        class="hidden md:block absolute -right-3 -bottom-3 w-24 h-24 object-contain opacity-90 pointer-events-none select-none transition-transform duration-300 group-hover:scale-105"
                     />
                     <div class="relative z-10 min-w-0 flex-1">
                         <p
-                            class="text-[11px] font-bold text-slate-400 uppercase tracking-wider"
+                            class="text-[9px] md:text-[11px] font-bold text-slate-400 uppercase tracking-wide md:tracking-wider leading-tight"
                         >
                             Perlu Persetujuan
                         </p>
-                        <p
-                            class="text-3xl font-black text-slate-800 leading-none mt-1.5 tracking-tight"
+                        <div
+                            class="mt-1 md:mt-1.5 flex items-center justify-between gap-1"
                         >
-                            {{
-                                stats.total_antrean ??
-                                stats.pengajuan_menunggu ??
-                                0
-                            }}
-                        </p>
+                            <p
+                                class="text-2xl md:text-3xl font-black text-amber-600 leading-none tracking-tight"
+                            >
+                                {{
+                                    stats.total_antrean ??
+                                    stats.pengajuan_menunggu ??
+                                    0
+                                }}
+                            </p>
+                            <img
+                                src="/images/icon-dokumen.png"
+                                alt=""
+                                aria-hidden="true"
+                                class="md:hidden w-7 h-7 object-contain shrink-0 pointer-events-none select-none"
+                            />
+                        </div>
                         <p
-                            class="text-[11px] font-medium text-amber-600/80 mt-1"
+                            class="text-[10px] md:text-[11px] font-medium text-amber-600/80 mt-1 leading-tight"
                         >
                             Antrean menunggu
                         </p>
@@ -1866,34 +2034,44 @@ const getCatatanAtasanList = (item) => {
 
                 <div
                     @click="approvedModal.show = true"
-                    class="relative overflow-hidden bg-white border border-slate-200/80 rounded-2xl px-5 py-5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 flex flex-col justify-between hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group min-h-[110px]"
+                    class="relative overflow-hidden bg-white border border-slate-200/80 rounded-xl md:rounded-2xl pl-3.5 pr-2.5 py-2.5 md:px-5 md:py-5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 flex flex-col hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group md:min-h-[110px]"
                 >
                     <div
-                        class="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-emerald-400 to-teal-400 rounded-l-2xl"
+                        class="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-emerald-400 to-teal-400 rounded-l-xl md:rounded-l-2xl"
                     ></div>
                     <img
                         src="/images/ceklis-3d.png"
                         alt=""
                         aria-hidden="true"
-                        class="absolute -right-3 -bottom-3 w-20 h-20 md:w-24 md:h-24 object-contain opacity-90 pointer-events-none select-none transition-transform duration-300 group-hover:scale-105"
+                        class="hidden md:block absolute -right-3 -bottom-3 w-24 h-24 object-contain opacity-90 pointer-events-none select-none transition-transform duration-300 group-hover:scale-105"
                     />
                     <div class="relative z-10 min-w-0 flex-1">
                         <p
-                            class="text-[11px] font-bold text-slate-400 uppercase tracking-wider"
+                            class="text-[9px] md:text-[11px] font-bold text-slate-400 uppercase tracking-wide md:tracking-wider leading-tight"
                         >
                             Disetujui Bulan Ini
                         </p>
-                        <p
-                            class="text-3xl font-black text-slate-800 leading-none mt-1.5 tracking-tight"
+                        <div
+                            class="mt-1 md:mt-1.5 flex items-center justify-between gap-1"
                         >
-                            {{
-                                stats.cuti_tim_bulan_ini ??
-                                stats.pengajuan_disetujui ??
-                                0
-                            }}
-                        </p>
+                            <p
+                                class="text-2xl md:text-3xl font-black text-emerald-600 leading-none tracking-tight"
+                            >
+                                {{
+                                    stats.cuti_tim_bulan_ini ??
+                                    stats.pengajuan_disetujui ??
+                                    0
+                                }}
+                            </p>
+                            <img
+                                src="/images/ceklis-3d.png"
+                                alt=""
+                                aria-hidden="true"
+                                class="md:hidden w-7 h-7 object-contain shrink-0 pointer-events-none select-none"
+                            />
+                        </div>
                         <p
-                            class="text-[11px] font-medium text-emerald-600/80 mt-1"
+                            class="text-[10px] md:text-[11px] font-medium text-emerald-600/80 mt-1 leading-tight"
                         >
                             Pengajuan disetujui
                         </p>
@@ -1902,32 +2080,45 @@ const getCatatanAtasanList = (item) => {
 
                 <div
                     @click="showTeamModal = true"
-                    class="relative overflow-hidden bg-white border border-slate-200/80 rounded-2xl px-5 py-5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 flex flex-col justify-between hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group min-h-[110px]"
+                    class="relative overflow-hidden bg-white border border-slate-200/80 rounded-xl md:rounded-2xl pl-3.5 pr-2.5 py-2.5 md:px-5 md:py-5 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100 flex flex-col hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group md:min-h-[110px]"
                 >
                     <div
-                        class="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-sky-400 to-blue-500 rounded-l-2xl"
+                        class="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-sky-400 to-blue-500 rounded-l-xl md:rounded-l-2xl"
                     ></div>
                     <img
                         src="/images/icon-tim-bawahan.png"
                         alt=""
                         aria-hidden="true"
-                        class="absolute -right-3 -bottom-3 w-20 h-20 md:w-24 md:h-24 object-contain opacity-90 pointer-events-none select-none transition-transform duration-300 group-hover:scale-105"
+                        class="hidden md:block absolute -right-3 -bottom-3 w-24 h-24 object-contain opacity-90 pointer-events-none select-none transition-transform duration-300 group-hover:scale-105"
                     />
                     <div class="relative z-10 min-w-0 flex-1">
                         <p
-                            class="text-[11px] font-bold text-slate-400 uppercase tracking-wider"
+                            class="text-[9px] md:text-[11px] font-bold text-slate-400 uppercase tracking-wide md:tracking-wider leading-tight"
                         >
                             Anggota Tim Hadir
                         </p>
-                        <p
-                            class="text-3xl font-black text-slate-800 leading-none mt-1.5 tracking-tight"
+                        <div
+                            class="mt-1 md:mt-1.5 flex items-center justify-between gap-1"
                         >
-                            {{ hadirHariIniCount
-                            }}<span class="text-xl font-bold text-slate-400"
-                                >/{{ totalAnggota }}</span
+                            <p
+                                class="text-2xl md:text-3xl font-black text-sky-600 leading-none tracking-tight"
                             >
-                        </p>
-                        <p class="text-[11px] font-medium text-sky-600/80 mt-1">
+                                {{ hadirHariIniCount
+                                }}<span
+                                    class="text-base md:text-xl font-bold text-slate-400"
+                                    >/{{ totalAnggota }}</span
+                                >
+                            </p>
+                            <img
+                                src="/images/icon-tim-bawahan.png"
+                                alt=""
+                                aria-hidden="true"
+                                class="md:hidden w-7 h-7 object-contain shrink-0 pointer-events-none select-none"
+                            />
+                        </div>
+                        <p
+                            class="text-[10px] md:text-[11px] font-medium text-sky-600/80 mt-1 leading-tight"
+                        >
                             {{ cutiHariIniCount }} orang cuti hari ini
                         </p>
                     </div>
@@ -1942,8 +2133,7 @@ const getCatatanAtasanList = (item) => {
                 >
                     <h3 class="text-sm font-extrabold text-slate-800">
                         {{
-                            !isAdminHR &&
-                            (user.role_id === 1 || activeTab === "pribadi")
+                            isPribadiMode
                                 ? "Riwayat Pengajuan Terbaru"
                                 : "Aktivitas Cuti Tim Terbaru"
                         }}
@@ -1956,47 +2146,58 @@ const getCatatanAtasanList = (item) => {
                     </Link>
                 </div>
 
-                <!-- DAFTAR KARTU (khusus HP) -->
                 <div class="md:hidden divide-y divide-slate-100">
                     <div
-                        v-for="item in sortedDisplayedRecentCuti"
+                        v-for="item in recentCutiMobile"
                         :key="'m-' + item.id"
-                        class="p-4 space-y-2 cursor-pointer active:bg-slate-50"
+                        role="button"
+                        tabindex="0"
+                        :aria-label="`Lihat detail cuti ${item.pegawai?.nama ?? ''}`"
+                        class="flex items-center gap-3 p-4 cursor-pointer hover:bg-gray-50 active:bg-slate-100 transition-colors focus:outline-none focus-visible:bg-gray-50"
                         @click="openDetailModal(item)"
+                        @keydown.enter.prevent="openDetailModal(item)"
+                        @keydown.space.prevent="openDetailModal(item)"
                     >
-                        <div class="flex items-start justify-between gap-2">
-                            <p
-                                v-if="user.role_id !== 1"
-                                class="text-sm font-bold text-slate-800 min-w-0"
-                            >
-                                {{ item.pegawai?.nama ?? "-" }}
+                        <div class="flex-1 min-w-0 space-y-2">
+                            <div class="flex items-start justify-between gap-2">
+                                <p
+                                    v-if="user.role_id !== 1"
+                                    class="text-sm font-bold text-slate-800 min-w-0"
+                                >
+                                    {{ item.pegawai?.nama ?? "-" }}
+                                </p>
+                                <span
+                                    class="ml-auto shrink-0 px-2 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-lg text-[10px] font-bold"
+                                >
+                                    {{ item.jenis_cuti ?? "Cuti Tahunan" }}
+                                </span>
+                            </div>
+                            <p class="text-xs text-slate-600 font-semibold">
+                                {{ formatDate(item.tanggal_mulai) }} -
+                                {{ formatDate(item.tanggal_selesai) }}
+                                &middot; {{ item.jumlah_hari }} Hari
                             </p>
-                            <span
-                                class="ml-auto shrink-0 px-2 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-lg text-[10px] font-bold"
-                            >
-                                {{ item.jenis_cuti ?? "Cuti Tahunan" }}
-                            </span>
-                        </div>
-                        <p class="text-xs text-slate-600 font-semibold">
-                            {{ formatDate(item.tanggal_mulai) }} -
-                            {{ formatDate(item.tanggal_selesai) }}
-                            &middot; {{ item.jumlah_hari }} Hari
-                        </p>
-                        <div class="flex items-center justify-between gap-2" @click.stop>
                             <span
                                 class="px-2.5 py-1 inline-flex text-[10px] font-extrabold rounded-lg uppercase tracking-wider"
                                 :class="formatStatus(item.status).class"
                             >
                                 {{ formatStatus(item.status).text }}
                             </span>
-                            <button
-                                type="button"
-                                @click.prevent="openDetailModal(item)"
-                                class="shrink-0 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-[10px] font-extrabold uppercase tracking-widest transition shadow-sm"
-                            >
-                                DETAIL
-                            </button>
                         </div>
+                        <svg
+                            class="w-5 h-5 text-gray-400 shrink-0"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                            aria-hidden="true"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M9 5l7 7-7 7"
+                            ></path>
+                        </svg>
                     </div>
                     <div
                         v-if="
@@ -2010,42 +2211,42 @@ const getCatatanAtasanList = (item) => {
                 </div>
 
                 <div class="hidden md:block overflow-x-auto">
-                    <table class="min-w-full">
+                    <table class="w-full">
                         <thead>
                             <tr class="border-b border-slate-50 bg-slate-50/50">
                                 <th
                                     v-if="user.role_id !== 1"
-                                    class="px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
+                                    class="px-3 2xl:px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
                                 >
                                     Nama Pegawai
                                 </th>
                                 <th
-                                    class="px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
+                                    class="px-3 2xl:px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
                                 >
                                     Jenis Cuti
                                 </th>
                                 <th
-                                    class="px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
+                                    class="px-3 2xl:px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
                                 >
                                     Tanggal Cuti
                                 </th>
                                 <th
-                                    class="px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
+                                    class="px-3 2xl:px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
                                 >
                                     Durasi
                                 </th>
                                 <th
-                                    class="px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
+                                    class="px-3 2xl:px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
                                 >
                                     Status
                                 </th>
                                 <th
-                                    class="px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
+                                    class="hidden 2xl:table-cell px-3 2xl:px-5 py-3 text-left text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
                                 >
                                     Keterangan
                                 </th>
                                 <th
-                                    class="px-5 py-3 text-center text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
+                                    class="px-3 2xl:px-5 py-3 text-center text-[10px] font-extrabold text-slate-400 uppercase tracking-widest"
                                 >
                                     Aksi
                                 </th>
@@ -2060,11 +2261,13 @@ const getCatatanAtasanList = (item) => {
                             >
                                 <td
                                     v-if="user.role_id !== 1"
-                                    class="px-5 py-3.5 whitespace-nowrap text-sm font-bold text-slate-800"
+                                    class="px-3 2xl:px-5 py-3.5 min-w-[150px] text-sm font-bold text-slate-800"
                                 >
                                     {{ item.pegawai?.nama ?? "-" }}
                                 </td>
-                                <td class="px-5 py-3.5 whitespace-nowrap">
+                                <td
+                                    class="px-3 2xl:px-5 py-3.5 whitespace-nowrap"
+                                >
                                     <span
                                         class="px-2.5 py-1 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-lg text-[11px] font-bold"
                                     >
@@ -2072,38 +2275,38 @@ const getCatatanAtasanList = (item) => {
                                     </span>
                                 </td>
                                 <td
-                                    class="px-5 py-3.5 whitespace-nowrap text-xs text-slate-600 font-semibold"
+                                    class="px-3 2xl:px-5 py-3.5 whitespace-nowrap text-xs text-slate-600 font-semibold"
                                 >
-                                    {{ formatDate(item.tanggal_mulai) }} -
-                                    {{ formatDate(item.tanggal_selesai) }}
+                                    {{ formatRentang(item) }}
                                 </td>
                                 <td
-                                    class="px-5 py-3.5 whitespace-nowrap text-xs font-semibold text-slate-600"
+                                    class="px-3 2xl:px-5 py-3.5 whitespace-nowrap text-xs font-semibold text-slate-600"
                                 >
                                     {{ item.jumlah_hari }} Hari
                                 </td>
-                                <td class="px-5 py-3.5 whitespace-nowrap">
+                                <td class="px-3 2xl:px-5 py-3.5">
                                     <span
-                                        class="px-3 py-1 inline-flex text-[10px] font-extrabold rounded-lg uppercase tracking-wider"
+                                        class="px-2.5 py-1 inline-block max-w-[220px] text-[10px] leading-snug font-extrabold rounded-lg uppercase tracking-wider"
                                         :class="formatStatus(item.status).class"
                                     >
                                         {{ formatStatus(item.status).text }}
                                     </span>
+                                    <p
+                                        v-if="ringkasKeterangan(item)"
+                                        class="2xl:hidden mt-1 max-w-[220px] truncate text-[11px] font-medium text-slate-400"
+                                        :title="item.keterangan"
+                                    >
+                                        {{ ringkasKeterangan(item) }}
+                                    </p>
                                 </td>
                                 <td
-                                    class="px-5 py-3.5 text-xs font-medium text-slate-500 max-w-[140px] truncate"
+                                    class="hidden 2xl:table-cell px-3 2xl:px-5 py-3.5 text-xs font-medium text-slate-500 max-w-[140px] truncate"
                                     :title="item.keterangan"
                                 >
-                                    {{
-                                        item.keterangan
-                                            ? item.keterangan
-                                                  .split("|")[0]
-                                                  .trim()
-                                            : "-"
-                                    }}
+                                    {{ ringkasKeterangan(item) || "-" }}
                                 </td>
                                 <td
-                                    class="px-5 py-3.5 whitespace-nowrap text-center"
+                                    class="px-3 2xl:px-5 py-3.5 whitespace-nowrap text-center"
                                     @click.stop
                                 >
                                     <button
@@ -2124,7 +2327,7 @@ const getCatatanAtasanList = (item) => {
                             >
                                 <td
                                     :colspan="user.role_id !== 1 ? 7 : 6"
-                                    class="px-5 py-12 text-center text-slate-400"
+                                    class="px-3 2xl:px-5 py-12 text-center text-slate-400"
                                 >
                                     <p class="text-sm font-semibold">
                                         Belum ada aktivitas pengajuan cuti.
@@ -2140,13 +2343,13 @@ const getCatatanAtasanList = (item) => {
                 <div
                     class="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm lg:col-span-2"
                 >
-                    <div class="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start mb-5">
-                        <div>
+                    <div
+                        class="flex flex-row flex-wrap items-start justify-between gap-3 mb-5"
+                    >
+                        <div class="min-w-0 flex-1">
                             <h3 class="text-sm font-extrabold text-slate-800">
                                 {{
-                                    !isAdminHR &&
-                                    (user.role_id === 1 ||
-                                        activeTab === "pribadi")
+                                    isPribadiMode
                                         ? "Total Ketidakhadiran"
                                         : "Total Absensi Tim"
                                 }}
@@ -2155,72 +2358,263 @@ const getCatatanAtasanList = (item) => {
                                 Jumlah hari cuti per bulan, per jenis.
                             </p>
                         </div>
-                        <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                            <select
-                                v-if="[4, 5, 6].includes(user.role_id) && (isAdminHR || activeTab === 'tim')"
-                                id="filter-kelompok-dashboard"
-                                name="kelompok_substansi"
-                                aria-label="Filter kelompok substansi"
-                                v-model="selectedKelompokSubstansi"
-                                @change="applyKelompokSubstansiFilter"
-                                class="text-[11px] font-bold border border-slate-200 rounded-lg text-slate-600 focus:ring-brand-500 focus:border-brand-500 py-1.5 pl-3 pr-8 bg-white cursor-pointer w-full sm:w-auto"
+
+                        <div
+                            ref="filterRef"
+                            @keydown.esc="dropdownTerbuka = null"
+                            class="flex flex-nowrap items-center gap-2"
+                            :class="
+                                tampilFilterKelompok
+                                    ? 'w-full sm:w-auto'
+                                    : 'w-auto shrink-0'
+                            "
+                        >
+                            <div
+                                v-if="tampilFilterKelompok"
+                                class="relative flex-1 min-w-0 sm:flex-none sm:w-64"
                             >
-                                <option :value="null">Semua Kelompok Substansi</option>
-                                <option
-                                    v-for="kelompok in listKelompokSubstansi"
-                                    :key="kelompok"
-                                    :value="kelompok"
+                                <div
+                                    class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
                                 >
-                                    {{ kelompok }}
-                                </option>
-                            </select>
-                            <select
-    id="filter-tahun-dashboard"
-    name="tahun"
-    aria-label="Filter tahun"
-    v-model="selectedTahun"
-    @change="applyKelompokSubstansiFilter"
-    class="text-[11px] font-bold border border-slate-200 rounded-lg text-slate-600 focus:ring-brand-500 focus:border-brand-500 py-1.5 pl-3 pr-8 bg-white cursor-pointer w-full sm:w-auto"
->
-    <option
-        v-for="tahun in daftarTahunFilter"
-        :key="tahun"
-        :value="tahun.toString()"
-    >
-        Tahun {{ tahun }}
-    </option>
-</select>
+                                    <svg
+                                        class="w-4 h-4 text-gray-400"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+                                        />
+                                    </svg>
+                                </div>
+                                <button
+                                    id="filter-kelompok-dashboard"
+                                    type="button"
+                                    aria-label="Filter kelompok substansi"
+                                    aria-haspopup="listbox"
+                                    :aria-expanded="
+                                        dropdownTerbuka === 'kelompok'
+                                    "
+                                    :title="labelKelompok"
+                                    @click="toggleDropdown('kelompok')"
+                                    class="w-full min-h-[40px] text-left text-sm border border-gray-300 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none rounded-lg shadow-sm text-gray-600 py-2 pl-8 pr-6 sm:pl-9 sm:pr-8 bg-white cursor-pointer"
+                                >
+                                    <span class="block truncate">{{
+                                        labelKelompokSingkat
+                                    }}</span>
+                                </button>
+                                <span
+                                    class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
+                                >
+                                    <svg
+                                        class="w-3.5 h-3.5 text-gray-500 transition-transform"
+                                        :class="{
+                                            'rotate-180':
+                                                dropdownTerbuka === 'kelompok',
+                                        }"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M19 9l-7 7-7-7"
+                                        ></path>
+                                    </svg>
+                                </span>
+                                <ul
+                                    v-if="dropdownTerbuka === 'kelompok'"
+                                    role="listbox"
+                                    class="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 min-w-[16rem] overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                                >
+                                    <li>
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            :aria-selected="
+                                                !selectedKelompokSubstansi
+                                            "
+                                            @click="pilihKelompok(null)"
+                                            :class="
+                                                !selectedKelompokSubstansi
+                                                    ? 'bg-emerald-50 text-emerald-700 font-semibold'
+                                                    : 'text-gray-700 hover:bg-gray-50'
+                                            "
+                                            class="block w-full whitespace-normal break-words leading-tight px-3 py-2 text-left text-sm cursor-pointer"
+                                        >
+                                            Semua Kelompok Substansi
+                                        </button>
+                                    </li>
+                                    <li
+                                        v-for="kelompok in daftarKelompokUrut"
+                                        :key="kelompok"
+                                    >
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            :title="namaKelompok(kelompok)"
+                                            :aria-selected="
+                                                selectedKelompokSubstansi ===
+                                                kelompok
+                                            "
+                                            @click="pilihKelompok(kelompok)"
+                                            :class="
+                                                selectedKelompokSubstansi ===
+                                                kelompok
+                                                    ? 'bg-emerald-50 text-emerald-700 font-semibold'
+                                                    : 'text-gray-700 hover:bg-gray-50'
+                                            "
+                                            class="block w-full whitespace-normal break-words leading-tight px-3 py-2 text-left text-sm cursor-pointer"
+                                        >
+                                            {{ namaKelompok(kelompok) }}
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
+
+                            <div class="relative w-[6.5rem] shrink-0 sm:w-36">
+                                <div
+                                    class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+                                >
+                                    <svg
+                                        class="w-4 h-4 text-gray-400"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                        />
+                                    </svg>
+                                </div>
+                                <button
+                                    id="filter-tahun-dashboard"
+                                    type="button"
+                                    aria-label="Filter tahun"
+                                    aria-haspopup="listbox"
+                                    :aria-expanded="dropdownTerbuka === 'tahun'"
+                                    @click="toggleDropdown('tahun')"
+                                    class="w-full min-h-[40px] text-left text-sm border border-gray-300 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none rounded-lg shadow-sm text-gray-600 py-2 pl-8 pr-6 sm:pl-9 sm:pr-8 bg-white cursor-pointer"
+                                >
+                                    <span class="block truncate"
+                                        ><span class="hidden sm:inline"
+                                            >Tahun </span
+                                        >{{ selectedTahun }}</span
+                                    >
+                                </button>
+                                <span
+                                    class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
+                                >
+                                    <svg
+                                        class="w-3.5 h-3.5 text-gray-500 transition-transform"
+                                        :class="{
+                                            'rotate-180':
+                                                dropdownTerbuka === 'tahun',
+                                        }"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M19 9l-7 7-7-7"
+                                        ></path>
+                                    </svg>
+                                </span>
+                                <ul
+                                    v-if="dropdownTerbuka === 'tahun'"
+                                    role="listbox"
+                                    class="absolute right-0 top-full z-30 mt-1 max-h-60 w-24 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                                >
+                                    <li
+                                        v-for="tahun in daftarTahunFilter"
+                                        :key="tahun"
+                                    >
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            :aria-label="`Tahun ${tahun}`"
+                                            :aria-selected="
+                                                selectedTahun ===
+                                                tahun.toString()
+                                            "
+                                            @click="pilihTahun(tahun)"
+                                            :class="
+                                                selectedTahun ===
+                                                tahun.toString()
+                                                    ? 'bg-emerald-50 text-emerald-700 font-semibold'
+                                                    : 'text-gray-700 hover:bg-gray-50'
+                                            "
+                                            class="block w-full px-3 py-2 text-left text-sm cursor-pointer"
+                                        >
+                                            {{ tahun }}
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
                         </div>
                     </div>
 
+                    <div
+                        class="md:hidden mb-3 flex w-full rounded-xl border border-slate-100 bg-slate-50 p-1"
+                        role="tablist"
+                        aria-label="Pilih tampilan grafik"
+                    >
+                        <button
+                            type="button"
+                            role="tab"
+                            :aria-selected="chartTab === 'tren'"
+                            @click="chartTab = 'tren'"
+                            :class="
+                                chartTab === 'tren'
+                                    ? 'bg-white shadow-sm text-emerald-700'
+                                    : 'text-slate-500 hover:text-slate-700'
+                            "
+                            class="flex-1 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer"
+                        >
+                            Tren Bulanan
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            :aria-selected="chartTab === 'distribusi'"
+                            @click="chartTab = 'distribusi'"
+                            :class="
+                                chartTab === 'distribusi'
+                                    ? 'bg-white shadow-sm text-emerald-700'
+                                    : 'text-slate-500 hover:text-slate-700'
+                            "
+                            class="flex-1 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer"
+                        >
+                            Distribusi
+                        </button>
+                    </div>
+
                     <div class="flex flex-col md:flex-row gap-4">
-                        <!-- PEMBARUAN (sesuai foto kanan): kotak grafik sekarang
-                             flex-col + justify-center, sehingga seluruh isi kotak
-                             (judul "ABSENSI PER BULAN", chart, label bulan, dan
-                             legend) berada di TENGAH secara vertikal, tidak lagi
-                             menempel ke atas dengan ruang kosong besar di bawah
-                             legend. Kotak ini ikut meregang setinggi kartu
-                             Distribusi di sebelahnya (items-stretch bawaan flex),
-                             jadi sisa ruang dibagi rata atas-bawah. -->
                         <div
-                            class="flex-1 min-w-0 flex flex-col justify-center rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100"
+                            :class="
+                                chartTab === 'tren' ? 'flex' : 'hidden md:flex'
+                            "
+                            class="flex-1 min-w-0 flex-col justify-center rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100"
                         >
                             <p
                                 class="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest mb-3"
                             >
                                 Absensi per Bulan
                             </p>
-                            <!-- PEMBARUAN: tinggi area chart dikembalikan ke h-44
-                                 (sebelumnya h-32) sesuai foto kanan. Dengan tinggi
-                                 ini bar terlihat proporsional dan area chart mengisi
-                                 kotak lebih baik, sehingga grafik tampak seimbang di
-                                 tengah kotak, bukan tenggelam di bagian bawah. -->
                             <div
                                 class="relative h-44 flex items-end justify-between gap-1 sm:gap-1.5"
                             >
-                                <!-- Garis putus-putus Background -->
-                                <!-- absolute inset-0 memastikan garis merentang pas di tinggi h-44,
-                                     sejajar dengan baseline bar di bawah ini. -->
                                 <div
                                     class="absolute inset-0 flex flex-col justify-between opacity-15 pointer-events-none z-0"
                                 >
@@ -2238,19 +2632,10 @@ const getCatatanAtasanList = (item) => {
                                     ></div>
                                 </div>
 
-                                <!-- Tooltip muncul otomatis saat hover (bukan klik)
-                                     lewat trik Tailwind group/group-hover — class
-                                     "group" ada di pembungkus tiap kolom bar, dan
-                                     tooltip memakai "opacity-0 invisible
-                                     group-hover:opacity-100 group-hover:visible".
-                                     State activeChartIndex/fungsi toggleChartTooltip
-                                     di script tetap dibiarkan ada (tidak dihapus)
-                                     agar tidak mengubah bagian lain yang mungkin
-                                     masih bergantung padanya. -->
                                 <div
                                     v-for="(data, index) in chartData"
                                     :key="index"
-                                    class="relative flex flex-col items-center flex-1 h-full justify-end cursor-pointer z-10 group"
+                                    class="relative flex flex-col items-center flex-1 h-full justify-end cursor-pointer z-10 hover:z-40 group"
                                 >
                                     <div
                                         class="w-full max-w-[28px] sm:max-w-[32px] flex flex-col-reverse rounded-t-md overflow-hidden transition-all duration-300 relative"
@@ -2286,8 +2671,6 @@ const getCatatanAtasanList = (item) => {
                                         ></div>
                                     </div>
 
-                                    <!-- Tooltip Hover: opacity/visible dikendalikan oleh
-                                         group-hover, tidak lagi oleh activeChartIndex. -->
                                     <div
                                         v-if="data.totalDays > 0"
                                         class="absolute mb-2 left-1/2 -translate-x-1/2 bg-slate-800 text-white py-1.5 px-2.5 rounded-lg shadow-xl pointer-events-none flex flex-col gap-0.5 items-center min-w-[110px] transition-all duration-200 text-[10px] opacity-0 invisible group-hover:opacity-100 group-hover:visible z-50"
@@ -2337,10 +2720,10 @@ const getCatatanAtasanList = (item) => {
                                 v-if="distribusiCuti.total === 0"
                                 class="text-center text-[11px] font-medium text-slate-400 mt-2"
                             >
-                                Belum ada cuti yang disetujui pada tahun {{ selectedTahun }}.
+                                Belum ada cuti yang disetujui pada tahun
+                                {{ selectedTahun }}.
                             </p>
 
-                            <!-- Label bulan -->
                             <div
                                 class="flex items-start justify-between gap-1 sm:gap-1.5 mt-2"
                             >
@@ -2399,7 +2782,12 @@ const getCatatanAtasanList = (item) => {
                         </div>
 
                         <div
-                            class="w-full md:w-[200px] shrink-0 flex flex-col items-center justify-center rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100"
+                            :class="
+                                chartTab === 'distribusi'
+                                    ? 'flex'
+                                    : 'hidden md:flex'
+                            "
+                            class="w-full md:w-[200px] shrink-0 flex-col items-center justify-center rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.04)] ring-1 ring-slate-100"
                         >
                             <p
                                 class="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest mb-3 self-start"
@@ -2407,62 +2795,19 @@ const getCatatanAtasanList = (item) => {
                                 Distribusi
                             </p>
 
-                            <!-- ================================================
-                                 DONUT CHART "DISTRIBUSI JENIS CUTI" — INTERAKTIF
-                                 conic-gradient (donutGradient) TETAP DIPERTAHANKAN
-                                 sebagai lapisan visual dasar (tidak dihapus). Di
-                                 atasnya ditambahkan lapisan <svg> transparan berisi
-                                 4 <circle> (satu per jenis cuti) yang bisa di-hover
-                                 ATAU di-tap (untuk HP/tablet tanpa event hover).
-
-                                 - Tengah donut: SELALU menampilkan PERSENTASE
-                                   TERTINGGI (distribusiCuti.percentDominant /
-                                   labelDominant), TIDAK berubah sama sekali saat
-                                   hover/tap — sesuai permintaan Boss.
-                                 - Saat salah satu segmen di-hover/tap: hanya
-                                   sebuah pop-up kecil muncul di atas donut berisi
-                                   ANGKA JUMLAH HARI saja (tanpa label/persen),
-                                   supaya ringkas — mis. cukup "1".
-
-                                 [FIX HOVER] Struktur SVG dipecah jadi 2 lapis
-                                 <circle> per segmen:
-                                   1) Lapisan VISUAL — warna busur asli, fill="none"
-                                      (bukan "transparent"), pointer-events="none"
-                                      supaya TIDAK ikut menangkap event mouse sama
-                                      sekali. Tampilan tetap identik seperti semula.
-                                   2) Lapisan HIT-AREA — tidak terlihat
-                                      (stroke-opacity="0"), stroke lebih tebal
-                                      (10 vs 4) supaya area hover/klik lebih lega,
-                                      dan pointer-events="stroke" eksplisit supaya
-                                      HANYA busur miliknya sendiri yang responsif
-                                      (bukan seluruh piringan lingkaran).
-                                 Sebelumnya "fill=transparent" pada satu lapisan
-                                 circle bisa membuat seluruh piringan (bukan cuma
-                                 busurnya) ikut menangkap event di sebagian
-                                 browser, sehingga segmen paling atas (besar)
-                                 kadang "mencuri" hover dari segmen lain — itulah
-                                 penyebab pop-up terasa pindah-pindah.
-                                 ================================================ -->
                             <div
                                 class="relative w-28 h-28 flex items-center justify-center"
                             >
-                                <!-- Lingkaran dasar (fallback visual + warna identik
-                                     dengan sebelumnya) -->
                                 <div
                                     class="absolute inset-0 rounded-full"
                                     :style="{ background: donutGradient }"
                                 ></div>
 
-                                <!-- Lapisan SVG untuk interaksi hover/tap per-segmen.
-                                     Berisi 2 layer circle per segmen: visual (tidak
-                                     menangkap event) dan hit-area (menangkap event,
-                                     tidak terlihat). -->
                                 <svg
                                     viewBox="0 0 36 36"
                                     class="absolute inset-0 w-full h-full -rotate-90"
                                     @mouseleave="clearHoveredDonutSegment"
                                 >
-                                    <!-- Layer 1: VISUAL — warna asli, tidak menangkap event -->
                                     <circle
                                         v-for="segment in donutSegments"
                                         :key="`visual-${segment.key}`"
@@ -2484,9 +2829,6 @@ const getCatatanAtasanList = (item) => {
                                         }"
                                     />
 
-                                    <!-- Layer 2: HIT-AREA — tak terlihat, stroke lebih
-                                         tebal, hanya busur milik segmen ini yang
-                                         responsif terhadap hover/klik. -->
                                     <circle
                                         v-for="segment in donutSegments"
                                         :key="`hit-${segment.key}`"
@@ -2508,8 +2850,6 @@ const getCatatanAtasanList = (item) => {
                                     />
                                 </svg>
 
-                                <!-- Tengah donut: TETAP persentase dominan, tidak
-                                     ikut berubah saat hover/tap. -->
                                 <div
                                     class="absolute w-[68px] h-[68px] rounded-full bg-white flex flex-col items-center justify-center shadow-sm ring-1 ring-slate-100 pointer-events-none"
                                 >
@@ -2527,12 +2867,6 @@ const getCatatanAtasanList = (item) => {
                                     >
                                 </div>
 
-                                <!-- Pop-up ringkas — posisinya SEKARANG dinamis,
-                                     mengikuti titik tengah busur warna yang
-                                     sedang di-hover/tap (donutTooltipStyle),
-                                     bukan selalu nongol di atas donut. Isinya
-                                     tetap hanya angka jumlah hari, tanpa
-                                     keterangan tambahan. -->
                                 <div
                                     v-if="hoveredDonutSegment"
                                     class="absolute -translate-x-1/2 -translate-y-1/2 bg-slate-800 text-white py-1 px-2.5 rounded-lg shadow-xl pointer-events-none flex items-center gap-1.5 text-xs font-black z-50 transition-all duration-150"
@@ -2556,182 +2890,30 @@ const getCatatanAtasanList = (item) => {
                             </p>
                             <div class="mt-2 space-y-1 w-full">
                                 <div
+                                    v-for="item in legendaDonut"
+                                    :key="item.key"
                                     class="flex items-center justify-between text-[10px] px-1 py-0.5 rounded-md transition-colors cursor-pointer"
                                     :class="
                                         hoveredDonutSegment &&
-                                        hoveredDonutSegment.key === 'tahunan'
-                                            ? 'bg-emerald-50'
+                                        hoveredDonutSegment.key === item.key
+                                            ? item.aktif
                                             : ''
                                     "
-                                    @mouseenter="
-                                        donutSegments.find(
-                                            (s) => s.key === 'tahunan',
-                                        ) &&
-                                            setHoveredDonutSegment(
-                                                donutSegments.find(
-                                                    (s) => s.key === 'tahunan',
-                                                ),
-                                            )
-                                    "
+                                    @mouseenter="hoverLegenda(item.key)"
                                     @mouseleave="clearHoveredDonutSegment"
-                                    @click="
-                                        donutSegments.find(
-                                            (s) => s.key === 'tahunan',
-                                        ) &&
-                                            toggleDonutSegment(
-                                                donutSegments.find(
-                                                    (s) => s.key === 'tahunan',
-                                                ),
-                                            )
-                                    "
+                                    @click="klikLegenda(item.key)"
                                 >
                                     <span
                                         class="flex items-center gap-1.5 font-semibold text-slate-500"
                                     >
                                         <span
-                                            class="w-2 h-2 rounded-full bg-emerald-400"
+                                            class="w-2 h-2 rounded-full"
+                                            :class="item.dot"
                                         ></span>
-                                        Tahunan
+                                        {{ item.label }}
                                     </span>
                                     <span class="font-bold text-slate-700"
-                                        >{{
-                                            distribusiCuti.percentTahunan
-                                        }}%</span
-                                    >
-                                </div>
-                                <div
-                                    class="flex items-center justify-between text-[10px] px-1 py-0.5 rounded-md transition-colors cursor-pointer"
-                                    :class="
-                                        hoveredDonutSegment &&
-                                        hoveredDonutSegment.key ===
-                                            'melahirkan'
-                                            ? 'bg-pink-50'
-                                            : ''
-                                    "
-                                    @mouseenter="
-                                        donutSegments.find(
-                                            (s) => s.key === 'melahirkan',
-                                        ) &&
-                                            setHoveredDonutSegment(
-                                                donutSegments.find(
-                                                    (s) =>
-                                                        s.key === 'melahirkan',
-                                                ),
-                                            )
-                                    "
-                                    @mouseleave="clearHoveredDonutSegment"
-                                    @click="
-                                        donutSegments.find(
-                                            (s) => s.key === 'melahirkan',
-                                        ) &&
-                                            toggleDonutSegment(
-                                                donutSegments.find(
-                                                    (s) =>
-                                                        s.key === 'melahirkan',
-                                                ),
-                                            )
-                                    "
-                                >
-                                    <span
-                                        class="flex items-center gap-1.5 font-semibold text-slate-500"
-                                    >
-                                        <span
-                                            class="w-2 h-2 rounded-full bg-pink-400"
-                                        ></span>
-                                        Melahirkan
-                                    </span>
-                                    <span class="font-bold text-slate-700"
-                                        >{{
-                                            distribusiCuti.percentMelahirkan
-                                        }}%</span
-                                    >
-                                </div>
-                                <div
-                                    class="flex items-center justify-between text-[10px] px-1 py-0.5 rounded-md transition-colors cursor-pointer"
-                                    :class="
-                                        hoveredDonutSegment &&
-                                        hoveredDonutSegment.key === 'penting'
-                                            ? 'bg-orange-50'
-                                            : ''
-                                    "
-                                    @mouseenter="
-                                        donutSegments.find(
-                                            (s) => s.key === 'penting',
-                                        ) &&
-                                            setHoveredDonutSegment(
-                                                donutSegments.find(
-                                                    (s) => s.key === 'penting',
-                                                ),
-                                            )
-                                    "
-                                    @mouseleave="clearHoveredDonutSegment"
-                                    @click="
-                                        donutSegments.find(
-                                            (s) => s.key === 'penting',
-                                        ) &&
-                                            toggleDonutSegment(
-                                                donutSegments.find(
-                                                    (s) => s.key === 'penting',
-                                                ),
-                                            )
-                                    "
-                                >
-                                    <span
-                                        class="flex items-center gap-1.5 font-semibold text-slate-500"
-                                    >
-                                        <span
-                                            class="w-2 h-2 rounded-full bg-orange-400"
-                                        ></span>
-                                        Penting
-                                    </span>
-                                    <span class="font-bold text-slate-700"
-                                        >{{
-                                            distribusiCuti.percentPenting
-                                        }}%</span
-                                    >
-                                </div>
-                                <div
-                                    class="flex items-center justify-between text-[10px] px-1 py-0.5 rounded-md transition-colors cursor-pointer"
-                                    :class="
-                                        hoveredDonutSegment &&
-                                        hoveredDonutSegment.key === 'besar'
-                                            ? 'bg-blue-50'
-                                            : ''
-                                    "
-                                    @mouseenter="
-                                        donutSegments.find(
-                                            (s) => s.key === 'besar',
-                                        ) &&
-                                            setHoveredDonutSegment(
-                                                donutSegments.find(
-                                                    (s) => s.key === 'besar',
-                                                ),
-                                            )
-                                    "
-                                    @mouseleave="clearHoveredDonutSegment"
-                                    @click="
-                                        donutSegments.find(
-                                            (s) => s.key === 'besar',
-                                        ) &&
-                                            toggleDonutSegment(
-                                                donutSegments.find(
-                                                    (s) => s.key === 'besar',
-                                                ),
-                                            )
-                                    "
-                                >
-                                    <span
-                                        class="flex items-center gap-1.5 font-semibold text-slate-500"
-                                    >
-                                        <span
-                                            class="w-2 h-2 rounded-full bg-blue-400"
-                                        ></span>
-                                        Besar
-                                    </span>
-                                    <span class="font-bold text-slate-700"
-                                        >{{
-                                            distribusiCuti.percentBesar
-                                        }}%</span
+                                        >{{ item.persen }}%</span
                                     >
                                 </div>
                             </div>
@@ -2741,55 +2923,84 @@ const getCatatanAtasanList = (item) => {
 
                 <div class="flex flex-col gap-4">
                     <div
-                        class="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm flex-1"
+                        class="bg-white border border-slate-100 rounded-2xl p-4 md:p-5 shadow-sm"
                     >
-                        <h3
-                            class="text-sm font-extrabold text-slate-800 mb-3 flex items-center gap-2"
-                        >
-                            <img
-                                src="/images/kalender-3d.png"
-                                alt=""
-                                aria-hidden="true"
-                                class="w-7 h-7 object-contain"
-                            />
-                            Hari Libur Terdekat
-                        </h3>
-                        <div class="space-y-2.5">
-                            <div
+                        <div class="flex items-center justify-between mb-3">
+                            <h3
+                                class="text-sm font-extrabold text-slate-800 flex items-center gap-2"
+                            >
+                                <img
+                                    src="/images/kalender-3d.png"
+                                    alt=""
+                                    aria-hidden="true"
+                                    class="w-6 h-6 md:w-7 md:h-7 object-contain"
+                                />
+                                Hari Libur Terdekat
+                            </h3>
+                        </div>
+
+                        <ul class="space-y-2">
+                            <li
                                 v-for="libur in upcomingHolidays"
                                 :key="libur.id"
-                                class="flex items-center gap-3 p-2.5 rounded-xl bg-slate-50/80 border border-slate-100 hover:bg-slate-50 transition"
+                                class="flex items-start gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-2.5 py-2 hover:bg-slate-50 transition"
                             >
                                 <div
-                                    class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center shrink-0 overflow-hidden"
+                                    class="w-11 shrink-0 rounded-lg py-1 text-center leading-none ring-1"
+                                    :class="
+                                        libur.isCutiBersama
+                                            ? 'bg-amber-50 text-amber-700 ring-amber-100'
+                                            : 'bg-rose-50 text-rose-600 ring-rose-100'
+                                    "
                                 >
-                                    <img
-                                        src="/images/kalender-2d.png"
-                                        alt=""
-                                        aria-hidden="true"
-                                        class="w-6 h-6 object-contain"
-                                    />
-                                </div>
-                                <div class="min-w-0">
-                                    <h4
-                                        class="text-xs font-bold text-slate-800 truncate"
+                                    <span class="block text-base font-black">{{
+                                        libur.hari
+                                    }}</span>
+                                    <span
+                                        class="mt-0.5 block text-[9px] font-extrabold tracking-wider"
+                                        >{{ libur.bulan }}</span
                                     >
-                                        {{ libur.keterangan }}
+                                </div>
+
+                                <div class="min-w-0 flex-1">
+                                    <h4
+                                        class="break-words text-xs font-bold leading-snug text-slate-800"
+                                    >
+                                        {{ libur.judul }}
                                     </h4>
                                     <p
-                                        class="text-[11px] text-slate-400 mt-0.5 font-medium"
+                                        class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] font-medium text-slate-400"
                                     >
-                                        {{ formatDate(libur.tanggal) }}
+                                        <span
+                                            >{{ libur.namaHari }},
+                                            {{ libur.tahun }}</span
+                                        >
+                                        <span
+                                            class="whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wide"
+                                            :class="
+                                                libur.isCutiBersama
+                                                    ? 'bg-amber-100 text-amber-700'
+                                                    : 'bg-rose-100 text-rose-600'
+                                            "
+                                        >
+                                            {{ libur.jenisLabel }}
+                                        </span>
+                                        <span
+                                            v-if="libur.isProyeksi"
+                                            class="rounded-full bg-slate-200/80 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-slate-500"
+                                            title="Proyeksi, belum resmi SKB"
+                                            >Proyeksi</span
+                                        >
                                     </p>
                                 </div>
-                            </div>
-                            <div
+                            </li>
+                            <li
                                 v-if="upcomingHolidays.length === 0"
-                                class="text-center py-4 text-xs font-medium text-slate-400"
+                                class="w-full text-center py-4 text-xs font-medium text-slate-400"
                             >
                                 Belum ada jadwal libur terdekat.
-                            </div>
-                        </div>
+                            </li>
+                        </ul>
                     </div>
 
                     <div
@@ -2941,6 +3152,14 @@ const getCatatanAtasanList = (item) => {
                                 </div>
                             </div>
                         </div>
+
+                        <p
+                            v-if="cutiMingguIniCount > 0"
+                            class="mt-2.5 text-center text-[11px] font-medium text-slate-500"
+                        >
+                            {{ cutiMingguIniCount }} orang cuti minggu ini
+                            &middot; ketuk tanggal untuk detail
+                        </p>
                     </div>
                 </div>
             </div>
@@ -2960,8 +3179,6 @@ const getCatatanAtasanList = (item) => {
                     class="p-5 max-h-[70vh] overflow-y-auto custom-scrollbar"
                     v-if="detailModal.data"
                 >
-                    <!-- HEADER MODAL "DETAIL CUTI": ikon clipboard-check + judul +
-                         subjudul di kiri, badge status berbentuk pil di kanan atas. -->
                     <div class="flex justify-between items-start gap-3 mb-5">
                         <div class="flex items-start gap-2.5 min-w-0">
                             <div class="mt-0.5 shrink-0 text-slate-800">
@@ -3016,8 +3233,7 @@ const getCatatanAtasanList = (item) => {
                                         'ditangguhkan' ||
                                     detailModal.data.status ===
                                         'dibatalkan_ditangguhkan',
-                                'bg-zinc-200 text-zinc-700':
-                                    detailModal.data.status === 'kedaluwarsa',
+
                                 'bg-slate-100 text-slate-600':
                                     detailModal.data.status?.includes(
                                         'dibatalkan',
@@ -3106,9 +3322,6 @@ const getCatatanAtasanList = (item) => {
                             </div>
                         </div>
 
-                        <!-- BARU: Anak ke-berapa, hanya tampil untuk Cuti Melahirkan.
-                             Sejajar dengan baris lain (label col-span-4, nilai col-span-8).
-                             RINCIAN SISA CUTI di bawahnya tetap dipertahankan. -->
                         <div
                             v-if="
                                 detailModal.data.jenis_cuti
@@ -3121,15 +3334,13 @@ const getCatatanAtasanList = (item) => {
                             <div class="col-span-4 text-slate-500 font-medium">
                                 Anak ke berapa
                             </div>
-                            <div class="col-span-8 text-slate-800 font-semibold">
+                            <div
+                                class="col-span-8 text-slate-800 font-semibold"
+                            >
                                 {{ detailModal.data.anak_ke }}
                             </div>
                         </div>
 
-                        <!-- RINCIAN SISA CUTI (kotak amber, sejajar dengan baris lain:
-                             label col-span-4, nilai col-span-8 rata kiri; aksen garis
-                             kiri amber). Data: totalCutiTersedia, jatahCutiBerjalan,
-                             saldoBawaanEligible — TIDAK diubah. -->
                         <div
                             v-if="
                                 detailModal.data.jenis_cuti
@@ -3149,27 +3360,38 @@ const getCatatanAtasanList = (item) => {
                                 >
                                     {{
                                         detailModal.data.pegawai
-                                            ?.total_cuti_tersedia ??
-                                        0
+                                            ?.total_cuti_tersedia ?? 0
                                     }}
                                     Hari Total
                                 </span>
                                 <span
                                     class="font-normal text-amber-600/80 text-xs block mt-0.5"
                                 >
-                                    (Tahun Ini:
                                     {{
                                         detailModal.data.pegawai
-                                            ?.sisa_hak_tahun_berjalan ??
-                                        0
+                                            ?.sisa_hak_tahun_berjalan ?? 0
                                     }}
-                                    hari | Saldo Bawaan:
+                                    sisa tahun ini +
                                     {{
                                         detailModal.data.pegawai
-                                            ?.saldo_bawaan_eligible ??
-                                        0
+                                            ?.saldo_bawaan_eligible ?? 0
                                     }}
-                                    hari)
+                                    bawaan +
+                                    {{
+                                        detailModal.data.pegawai
+                                            ?.cuti_dikembalikan ?? 0
+                                    }}
+                                    dikembalikan
+                                </span>
+                                <span
+                                    v-if="isMenungguTahunan(detailModal.data)"
+                                    class="text-xs font-bold block mt-1.5"
+                                    :class="
+                                        sisaSetelahDisetujui(detailModal.data) < 0
+                                            ? 'text-red-600'
+                                            : 'text-amber-800'
+                                    "
+                                >
                                 </span>
                             </div>
                         </div>
@@ -3286,16 +3508,6 @@ const getCatatanAtasanList = (item) => {
                         </div>
                     </div>
 
-                    <!-- BLOK "CATATAN / RESPON ATASAN": dipecah menjadi kondisi
-                         berurutan supaya narasi sesuai siapa yang memproses:
-                           1) isStatusDibatalkanReguler -> "Informasi Pembatalan"
-                              (dibatalkan MANDIRI oleh pemohon, bukan atasan).
-                           2) isStatusDitangguhkan       -> "Alasan Penangguhan /
-                              Pembatalan Atasan".
-                           3) getCatatanAtasanList / approval logs / fallback.
-                              (Termasuk status "ditolak" — sekarang tampil sebagai
-                              daftar L3 & L4 karena getCatatanAtasanList tidak lagi
-                              di-skip untuk status ini.) -->
                     <div
                         v-if="
                             isStatusDibatalkanAtauDitangguhkan(
@@ -3381,9 +3593,6 @@ const getCatatanAtasanList = (item) => {
                             </p>
                         </div>
 
-                        <!-- (1) PEMBATALAN MANDIRI OLEH PEMOHON — status
-                             "dibatalkan_reguler". Memakai getNamaPembatal /
-                             getCatatanPembatalanReguler yang merujuk ke pemohon. -->
                         <div v-if="isStatusDibatalkanReguler(detailModal.data)">
                             <p class="text-sm text-slate-700 mb-1">
                                 Dibatalkan oleh:
@@ -3401,10 +3610,6 @@ const getCatatanAtasanList = (item) => {
                                 }}"
                             </p>
 
-                            <!-- Fitur "Riwayat Persetujuan Atasan" (L3/L4) TETAP
-                                 DIPERTAHANKAN untuk pembatalan mandiri, supaya user
-                                 bisa melihat sampai tahap mana pengajuan sempat
-                                 diproses. Judul & warna netral (slate). -->
                             <div
                                 v-if="
                                     getCatatanAtasanList(detailModal.data)
@@ -3441,7 +3646,6 @@ const getCatatanAtasanList = (item) => {
                             </div>
                         </div>
 
-                        <!-- (2) DITANGGUHKAN / DIBATALKAN_DITANGGUHKAN -->
                         <div v-else-if="isStatusDitangguhkan(detailModal.data)">
                             <p class="text-sm text-slate-700 mb-1">
                                 Diproses oleh:
@@ -3455,9 +3659,6 @@ const getCatatanAtasanList = (item) => {
                                 "{{ getCatatanAtasan(detailModal.data) }}"
                             </p>
 
-                            <!-- Daftar L3 & L4 lengkap dengan nama pejabat dan
-                                 statusnya (Disetujui / Menunggu Persetujuan) tetap
-                                 ditampilkan meski pengajuan akhirnya ditangguhkan. -->
                             <div
                                 v-if="
                                     getCatatanAtasanList(detailModal.data)
@@ -3494,11 +3695,6 @@ const getCatatanAtasanList = (item) => {
                             </div>
                         </div>
 
-                        <!-- (3) SEMUA STATUS LAIN, TERMASUK DITOLAK & DISETUJUI:
-                             render daftar L3 & L4 dari getCatatanAtasanList.
-                             Sebelumnya cabang ini "kosong" khusus untuk ditolak
-                             (karena fungsinya di-skip), sekarang tampil normal
-                             seperti referensi tampilan yang diminta. -->
                         <div
                             v-else-if="
                                 getCatatanAtasanList(detailModal.data).length
@@ -3608,8 +3804,13 @@ const getCatatanAtasanList = (item) => {
                                     type="date"
                                     v-model="formRevisi.tanggal_mulai"
                                     :min="minDate"
+                                    :max="maxTanggalMulaiRevisi"
                                     class="w-full min-h-[44px] px-2.5 py-1.5 border border-slate-200 rounded-lg text-base sm:text-sm focus:ring-amber-500 focus:border-amber-500"
                                 />
+                                <p class="text-[10px] text-slate-400 mt-1">
+                                    Maks. {{ MAKS_MULAI_TAHUN_KE_DEPAN }} tahun
+                                    dari hari ini
+                                </p>
                             </div>
                             <div>
                                 <label
@@ -3623,8 +3824,13 @@ const getCatatanAtasanList = (item) => {
                                     type="date"
                                     v-model="formRevisi.tanggal_selesai"
                                     :min="formRevisi.tanggal_mulai || minDate"
+                                    :max="maxTanggalSelesaiRevisi"
                                     class="w-full min-h-[44px] px-2.5 py-1.5 border border-slate-200 rounded-lg text-base sm:text-sm focus:ring-amber-500 focus:border-amber-500"
                                 />
+                                <p class="text-[10px] text-slate-400 mt-1">
+                                    Rentang maks. {{ MAKS_RENTANG_HARI }} hari
+                                    kalender
+                                </p>
                             </div>
                         </div>
                         <div
@@ -3679,6 +3885,23 @@ const getCatatanAtasanList = (item) => {
                                 ></span
                             >
                         </div>
+                        <p
+                            v-if="
+                                (detailModal.data?.jenis_cuti || 'Cuti Tahunan')
+                                    .toLowerCase()
+                                    .includes('tahunan')
+                            "
+                            class="text-xs text-amber-800 bg-amber-100 border border-amber-200 rounded-lg px-3 py-2"
+                        >
+                            Revisi Cuti Tahunan akan memotong saldo sesuai
+                            tanggal baru setelah disetujui.
+                        </p>
+                        <p
+                            v-else
+                            class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2"
+                        >
+                            Jenis cuti ini tidak memotong saldo cuti tahunan.
+                        </p>
                         <div
                             v-if="tahunTanpaSaldoRevisi !== null"
                             class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl px-3.5 py-2.5"
@@ -3745,7 +3968,9 @@ const getCatatanAtasanList = (item) => {
                         </button>
                     </div>
 
-                    <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                    <div
+                        class="flex flex-wrap items-center gap-2 w-full sm:w-auto"
+                    >
                         <button
                             type="button"
                             @click="closeDetailModal"
@@ -3937,6 +4162,7 @@ const getCatatanAtasanList = (item) => {
                     class="p-3.5 border-t border-slate-100 bg-slate-50 flex justify-between items-center shrink-0"
                 >
                     <Link
+                        v-if="!isAdminHR"
                         :href="route('karyawan.kalender')"
                         class="text-xs font-bold text-blue-600 hover:text-blue-700 transition flex items-center gap-1"
                         >Buka Kalender Tim Lengkap
@@ -3956,7 +4182,7 @@ const getCatatanAtasanList = (item) => {
                     <button
                         type="button"
                         @click="showTeamModal = false"
-                        class="px-4 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-bold transition cursor-pointer shadow-sm"
+                        class="ml-auto px-4 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-bold transition cursor-pointer shadow-sm"
                     >
                         Tutup
                     </button>
@@ -4183,10 +4409,10 @@ const getCatatanAtasanList = (item) => {
                     </div>
                     <div class="flex-1">
                         <h3 class="text-base font-bold text-slate-800">
-                            Rincian Saldo Cuti Bawaan
+                            Rincian Saldo Cuti
                         </h3>
                         <p class="text-xs font-semibold text-slate-500 mt-0.5">
-                            {{ user.nama }} &bull; posisi per {{ currentYear }}
+                            {{ user.nama }} &bull; posisi per {{ tahunKpi }}
                         </p>
                     </div>
                     <button
@@ -4211,56 +4437,79 @@ const getCatatanAtasanList = (item) => {
                 </div>
 
                 <div class="p-4 overflow-y-auto flex-1 space-y-4">
-                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        <div class="bg-slate-50 rounded-xl p-2.5">
-                            <p class="text-[10px] font-bold text-slate-400">
-                                Sisa {{ currentYear - 2 }}
+                    <div
+                        class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 flex items-center justify-between gap-3"
+                    >
+                        <div>
+                            <p class="text-[11px] font-bold text-emerald-700">
+                                Total cuti tersedia {{ tahunKpi }}
                             </p>
-                            <p class="text-lg font-black text-slate-800 mt-0.5">
-                                {{ sisaDuaTahunLalu
-                                }}<span
-                                    class="text-[10px] font-semibold text-slate-400 ml-0.5"
-                                    >hari</span
-                                >
+                            <p class="text-[11px] text-emerald-700/80 mt-0.5">
+                                Cuti yang bisa kamu ajukan sekarang
                             </p>
                         </div>
-                        <div class="bg-slate-50 rounded-xl p-2.5">
-                            <p class="text-[10px] font-bold text-slate-400">
-                                Sisa {{ currentYear - 1 }}
-                            </p>
-                            <p class="text-lg font-black text-slate-800 mt-0.5">
-                                {{ sisaSatuTahunLalu
-                                }}<span
-                                    class="text-[10px] font-semibold text-slate-400 ml-0.5"
-                                    >hari</span
-                                >
-                            </p>
-                        </div>
-                        <div class="bg-slate-50 rounded-xl p-2.5">
-                            <p class="text-[10px] font-bold text-slate-400">
-                                Sisa {{ currentYear }}
-                            </p>
-                            <p class="text-lg font-black text-slate-800 mt-0.5">
-                                {{ jatahTahunIniUntukSaldo
-                                }}<span
-                                    class="text-[10px] font-semibold text-slate-400 ml-0.5"
-                                    >hari</span
-                                >
-                            </p>
-                        </div>
-                        <div class="bg-emerald-50 rounded-xl p-2.5">
-                            <p class="text-[10px] font-bold text-emerald-600">
-                                Bawaan eligible
-                            </p>
-                            <p
-                                class="text-lg font-black text-emerald-700 mt-0.5"
+                        <p
+                            class="text-3xl font-black text-emerald-800 leading-none"
+                        >
+                            {{ totalCutiTersedia
+                            }}<span
+                                class="text-sm font-bold text-emerald-600 ml-1"
+                                >hari</span
                             >
-                                {{ saldoBawaanEligible
-                                }}<span
-                                    class="text-[10px] font-semibold text-emerald-600 ml-0.5"
-                                    >hari</span
+                        </p>
+                    </div>
+
+                    <div>
+                        <p
+                            class="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider mb-2"
+                        >
+                            Dari mana angkanya?
+                        </p>
+                        <div
+                            class="rounded-xl border border-slate-200 divide-y divide-slate-100 text-xs"
+                        >
+                            <div
+                                class="flex items-center justify-between gap-3 px-3 py-2.5"
+                            >
+                                <span class="text-slate-600"
+                                    >Sisa jatah cuti {{ tahunKpi }}</span
                                 >
-                            </p>
+                                <span class="font-bold text-slate-800"
+                                    >{{ jatahTahunIniUntukSaldo }} hari</span
+                                >
+                            </div>
+                            <div
+                                class="flex items-center justify-between gap-3 px-3 py-2.5"
+                            >
+                                <span class="text-slate-600"
+                                    >Cuti bawaan dari tahun-tahun
+                                    sebelumnya</span
+                                >
+                                <span class="font-bold text-slate-800"
+                                    >{{ saldoBawaanEligible }} hari</span
+                                >
+                            </div>
+                            <div
+                                class="flex items-center justify-between gap-3 px-3 py-2.5"
+                            >
+                                <span class="text-slate-600"
+                                    >Cuti {{ tahunKpi - 1 }} yang ditangguhkan,
+                                    dikembalikan</span
+                                >
+                                <span class="font-bold text-slate-800"
+                                    >{{ cutiDikembalikan }} hari</span
+                                >
+                            </div>
+                            <div
+                                class="flex items-center justify-between gap-3 px-3 py-2.5 bg-slate-50"
+                            >
+                                <span class="font-bold text-slate-700"
+                                    >Total</span
+                                >
+                                <span class="font-black text-slate-900"
+                                    >{{ totalCutiTersedia }} hari</span
+                                >
+                            </div>
                         </div>
                     </div>
 
@@ -4268,91 +4517,202 @@ const getCatatanAtasanList = (item) => {
                         <p
                             class="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider mb-2"
                         >
-                            Cara perhitungan
+                            Sisa cuti per tahun
                         </p>
+                        <div class="grid grid-cols-3 gap-2">
+                            <div class="bg-slate-50 rounded-xl p-2.5">
+                                <p class="text-[10px] font-bold text-slate-400">
+                                    Sisa {{ tahunKpi - 2 }}
+                                </p>
+                                <p
+                                    class="text-lg font-black text-slate-800 mt-0.5"
+                                >
+                                    {{ sisaDuaTahunLalu
+                                    }}<span
+                                        class="text-[10px] font-semibold text-slate-400 ml-0.5"
+                                        >hari</span
+                                    >
+                                </p>
+                            </div>
+                            <div class="bg-slate-50 rounded-xl p-2.5">
+                                <p class="text-[10px] font-bold text-slate-400">
+                                    Sisa {{ tahunKpi - 1 }}
+                                </p>
+                                <p
+                                    class="text-lg font-black text-slate-800 mt-0.5"
+                                >
+                                    {{ sisaSatuTahunLalu
+                                    }}<span
+                                        class="text-[10px] font-semibold text-slate-400 ml-0.5"
+                                        >hari</span
+                                    >
+                                </p>
+                            </div>
+                            <div class="bg-slate-50 rounded-xl p-2.5">
+                                <p class="text-[10px] font-bold text-slate-400">
+                                    Sisa {{ tahunKpi }}
+                                </p>
+                                <p
+                                    class="text-lg font-black text-slate-800 mt-0.5"
+                                >
+                                    {{ jatahTahunIniUntukSaldo
+                                    }}<span
+                                        class="text-[10px] font-semibold text-slate-400 ml-0.5"
+                                        >hari</span
+                                    >
+                                </p>
+                            </div>
+                        </div>
+                    </div>
 
-                        <div class="flex gap-2.5 mb-3">
+                    <details
+                        class="group rounded-xl border border-slate-200 bg-white"
+                    >
+                        <summary
+                            class="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2.5 text-xs font-bold text-slate-700 [&::-webkit-details-marker]:hidden"
+                        >
+                            Kenapa sisa cuti {{ tahunKpi }} tinggal
+                            {{ jatahTahunIniUntukSaldo }} hari?
+                            <svg
+                                class="w-4 h-4 text-slate-400 shrink-0 transition-transform group-open:rotate-180"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
+                            </svg>
+                        </summary>
+                        <div
+                            class="px-3 pb-3 text-xs leading-relaxed text-slate-600 space-y-1.5"
+                        >
+                            <p>
+                                Jatah cuti {{ tahunKpi }} adalah
+                                {{ kuotaTahunanUtuh }} hari. Yang sudah terpakai
+                                {{ cutiTerpakaiTotal }} hari, terdiri dari
+                                {{ cutiDigunakan }} hari digunakan dan
+                                {{ cutiDitangguhkan }} hari ditangguhkan. Jadi
+                                sisanya {{ kuotaTahunanUtuh }} &minus;
+                                {{ cutiTerpakaiTotal }} =
+                                {{ jatahTahunIniUntukSaldo }} hari.
+                            </p>
+                            <p v-if="cutiDitangguhkan > 0">
+                                Cuti yang ditangguhkan tetap dihitung terpakai
+                                di
+                                {{ tahunKpi }}, lalu dikembalikan ke saldo
+                                {{ tahunKpi + 1 }}.
+                            </p>
+                        </div>
+                    </details>
+
+                    <details
+                        class="group rounded-xl border border-slate-200 bg-white"
+                    >
+                        <summary
+                            class="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2.5 text-xs font-bold text-slate-700 [&::-webkit-details-marker]:hidden"
+                        >
+                            Cara hitung cuti bawaan
+                            <svg
+                                class="w-4 h-4 text-slate-400 shrink-0 transition-transform group-open:rotate-180"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
+                            </svg>
+                        </summary>
+                        <div class="px-3 pb-3 space-y-3">
+                            <p class="text-xs leading-relaxed text-slate-600">
+                                Cuti bawaan bisa sampai 12 hari kalau
+                                <span class="font-bold">kedua syarat</span> ini
+                                terpenuhi:
+                            </p>
+
+                            <div class="flex gap-2.5">
+                                <div
+                                    class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[11px] font-bold shrink-0 mt-0.5"
+                                    :class="
+                                        syaratDuaTahunLaluTerpenuhi
+                                            ? 'bg-emerald-500'
+                                            : 'bg-red-500'
+                                    "
+                                >
+                                    {{
+                                        syaratDuaTahunLaluTerpenuhi ? "✓" : "✕"
+                                    }}
+                                </div>
+                                <div>
+                                    <p class="text-xs font-bold text-slate-700">
+                                        Sisa cuti {{ tahunKpi - 2 }} utuh 12
+                                        hari
+                                    </p>
+                                    <p class="text-xs text-slate-500 mt-0.5">
+                                        Kamu punya {{ sisaDuaTahunLalu }} hari.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="flex gap-2.5">
+                                <div
+                                    class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[11px] font-bold shrink-0 mt-0.5"
+                                    :class="
+                                        syaratSatuTahunLaluTerpenuhi
+                                            ? 'bg-emerald-500'
+                                            : 'bg-red-500'
+                                    "
+                                >
+                                    {{
+                                        syaratSatuTahunLaluTerpenuhi ? "✓" : "✕"
+                                    }}
+                                </div>
+                                <div>
+                                    <p class="text-xs font-bold text-slate-700">
+                                        Sisa cuti {{ tahunKpi - 1 }} utuh 12
+                                        hari
+                                    </p>
+                                    <p class="text-xs text-slate-500 mt-0.5">
+                                        Kamu punya {{ sisaSatuTahunLalu }} hari.
+                                    </p>
+                                </div>
+                            </div>
+
                             <div
-                                class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[11px] font-bold shrink-0 mt-0.5"
+                                class="rounded-xl p-3 text-xs leading-relaxed"
                                 :class="
                                     akumulasiPenuh
-                                        ? 'bg-emerald-500'
-                                        : 'bg-red-500'
+                                        ? 'bg-emerald-50 text-emerald-700'
+                                        : 'bg-slate-50 text-slate-600'
                                 "
                             >
-                                {{ akumulasiPenuh ? "✓" : "✕" }}
-                            </div>
-                            <div>
-                                <p class="text-xs font-bold text-slate-700">
-                                    {{
-                                        akumulasiPenuh
-                                            ? "Syarat akumulasi penuh terpenuhi"
-                                            : "Syarat akumulasi penuh tidak terpenuhi"
-                                    }}
-                                </p>
-                                <p
-                                    class="text-xs text-slate-500 mt-0.5 leading-relaxed"
-                                >
-                                    Akumulasi 12 hari hanya diberikan bila sisa
-                                    {{ currentYear - 2 }} dan sisa
-                                    {{ currentYear - 1 }} sama-sama utuh 12
-                                    hari.
-                                    <template v-if="!akumulasiPenuh">
-                                        Sisa {{ currentYear - 2 }} tercatat
-                                        {{ sisaDuaTahunLalu }} hari, sehingga
-                                        syarat ini tidak terpenuhi.
-                                    </template>
-                                </p>
+                                <template v-if="akumulasiPenuh">
+                                    Kedua syarat terpenuhi, jadi cuti bawaan
+                                    kamu
+                                    <span class="font-bold"
+                                        >{{ saldoBawaanEligible }} hari</span
+                                    >.
+                                </template>
+                                <template v-else>
+                                    Karena ada syarat yang belum terpenuhi, cuti
+                                    bawaan dibatasi maksimal 6 hari. Sisa cuti
+                                    {{ tahunKpi - 1 }} kamu
+                                    {{ sisaSatuTahunLalu }} hari, jadi yang bisa
+                                    dibawa
+                                    <span class="font-bold"
+                                        >{{ saldoBawaanEligible }} hari</span
+                                    >.
+                                </template>
                             </div>
                         </div>
-
-                        <div v-if="!akumulasiPenuh" class="flex gap-2.5">
-                            <div
-                                class="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[11px] font-bold shrink-0 mt-0.5"
-                            >
-                                ✓
-                            </div>
-                            <div>
-                                <p class="text-xs font-bold text-slate-700">
-                                    Berlaku aturan alternatif
-                                </p>
-                                <p
-                                    class="text-xs text-slate-500 mt-0.5 leading-relaxed"
-                                >
-                                    Sistem mengambil nilai terkecil antara batas
-                                    bawaan 6 hari dan sisa
-                                    {{ currentYear - 1 }} ({{
-                                        sisaSatuTahunLalu
-                                    }}
-                                    hari). Hasilnya {{ saldoBawaanEligible }}
-                                    hari.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="flex gap-2.5 p-3 bg-emerald-50 rounded-xl">
-                        <svg
-                            class="w-4 h-4 text-emerald-600 shrink-0 mt-0.5"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                        >
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                            ></path>
-                        </svg>
-                        <p class="text-xs text-emerald-700 leading-relaxed">
-                            Saldo {{ currentYear - 2 }} tidak hangus, tetapi
-                            hanya sebagian yang bisa dibawa karena akumulasi
-                            penuh membutuhkan dua tahun berturut-turut tanpa
-                            pemakaian. Sisa {{ currentYear }} dihitung terpisah
-                            dari aturan ini.
-                        </p>
-                    </div>
+                    </details>
                 </div>
 
                 <div
@@ -4485,7 +4845,6 @@ const getCatatanAtasanList = (item) => {
         </div>
     </Teleport>
 
-    <!-- Modal Setujui Pengajuan Cuti -->
     <Teleport to="body">
         <div
             v-if="approveModal.show"
@@ -4585,7 +4944,9 @@ const getCatatanAtasanList = (item) => {
                             <span
                                 class="text-sm font-bold text-slate-800 text-right"
                             >
-                                {{ formatDate(approveModal.item.tanggal_mulai) }}
+                                {{
+                                    formatDate(approveModal.item.tanggal_mulai)
+                                }}
                                 s/d
                                 {{
                                     formatDate(
@@ -4630,14 +4991,17 @@ const getCatatanAtasanList = (item) => {
                         :disabled="approveModal.processing"
                         class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold transition shadow-md shadow-emerald-600/30 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                        {{ approveModal.processing ? "Memproses..." : "Ya, Setujui" }}
+                        {{
+                            approveModal.processing
+                                ? "Memproses..."
+                                : "Ya, Setujui"
+                        }}
                     </button>
                 </div>
             </div>
         </div>
     </Teleport>
 
-    <!-- Modal Alasan Penolakan Cuti -->
     <Teleport to="body">
         <div
             v-if="rejectModal.show"
@@ -4694,7 +5058,9 @@ const getCatatanAtasanList = (item) => {
                 </div>
 
                 <div class="p-5 space-y-4" v-if="rejectModal.item">
-                    <p class="text-sm font-medium text-slate-700 leading-relaxed">
+                    <p
+                        class="text-sm font-medium text-slate-700 leading-relaxed"
+                    >
                         Silakan berikan alasan atau catatan mengapa pengajuan
                         cuti ini ditolak. Alasan ini akan dibaca oleh pegawai
                         yang bersangkutan.
@@ -4757,9 +5123,7 @@ const getCatatanAtasanList = (item) => {
                             for="alasan-penolakan-dashboard"
                             class="block text-[11px] font-extrabold uppercase tracking-wider mb-1.5"
                             :class="
-                                rejectError
-                                    ? 'text-red-600'
-                                    : 'text-slate-500'
+                                rejectError ? 'text-red-600' : 'text-slate-500'
                             "
                         >
                             Alasan Penolakan
@@ -4816,12 +5180,14 @@ const getCatatanAtasanList = (item) => {
                         :disabled="rejectModal.processing"
                         class="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-bold transition shadow-md shadow-red-600/30 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                        {{ rejectModal.processing ? "Mengirim..." : "Kirim Penolakan" }}
+                        {{
+                            rejectModal.processing
+                                ? "Mengirim..."
+                                : "Kirim Penolakan"
+                        }}
                     </button>
                 </div>
             </div>
         </div>
     </Teleport>
 </template>
-
-

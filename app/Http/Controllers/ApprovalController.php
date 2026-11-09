@@ -1,6 +1,12 @@
 <?php
 
+
+
+
 namespace App\Http\Controllers;
+
+
+
 
 use App\Models\PengajuanCuti;
 use App\Models\SaldoCuti;
@@ -10,6 +16,9 @@ use App\Models\ApprovalLog;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Illuminate\Support\Facades\Auth;
+
+
+
 
 class ApprovalController extends Controller
 {
@@ -21,6 +30,9 @@ class ApprovalController extends Controller
         $user = Auth::user();
         // Relasi 'saldoCutiTahunIni' tetap dipertahankan agar sisa cuti terbawa ke frontend
         $query = PengajuanCuti::with(['pegawai.saldoCutiTahunIni']);
+
+
+
 
         // --- BATASAN WILAYAH (bukan lagi batasan status) ---
         // Kunci hardcode status 'menunggu_lX' per role sudah DIHAPUS supaya
@@ -75,6 +87,9 @@ class ApprovalController extends Controller
             }
         }
 
+
+
+
         // Fitur pencarian nama / NIP pegawai
         if ($request->filled('search')) {
             $search = $request->search;
@@ -84,35 +99,58 @@ class ApprovalController extends Controller
             });
         }
 
+
+
+
         // Fitur filter jenis cuti yang aman dari string "Semua Jenis Cuti"
         if ($request->filled('jenis_cuti') && $request->jenis_cuti !== '' && $request->jenis_cuti !== 'Semua Jenis Cuti') {
             $query->where('jenis_cuti', $request->jenis_cuti);
         }
+
+
+
 
         // Pengurutan data terbaru di paling atas
         $antrean = $query->orderBy('created_at', 'desc')
             ->paginate(10)
             ->withQueryString();
 
+
+
+
         // Hitung sisa cuti dinamis (sama persis logika Dashboard) untuk setiap item
         $tahun = date('Y');
         $antrean->getCollection()->transform(function ($item) use ($tahun) {
-            $saldo = $item->pegawai->saldoCutiTahunIni ?? null;
-            $kuotaTahunan  = $saldo->kuota_tahunan ?? 0;
-            $sisaTahunLalu = $saldo->carry_forward_normal ?? 0;
-            $cutiTerpakai = PengajuanCuti::where('pegawai_id', $item->pegawai_id)
-                ->where('jenis_cuti', 'Cuti Tahunan')
-                ->where('status', 'disetujui')
-                ->whereYear('tanggal_mulai', $tahun)
-                ->sum('jumlah_hari');
-            $totalTersedia = ($kuotaTahunan + $sisaTahunLalu) - $cutiTerpakai;
+            $saldo = SaldoCuti::where('pegawai_id', $item->pegawai_id)
+                ->where('tahun', $tahun)
+                ->first();
+            $saldoTahunLalu = SaldoCuti::where('pegawai_id', $item->pegawai_id)
+                ->where('tahun', $tahun - 1)
+                ->first();
+            $kuotaTahunan = (int) ($saldo->kuota_tahunan ?? 12);
+            $carryForward = (int) ($saldo->carry_forward_normal ?? 0);
+            $sisaDuaTahunLalu = (int) ($saldoTahunLalu->carry_forward_normal ?? 0);
+            $cutiTerpakai = SaldoCuti::terpakaiEfektif(
+                (int) $item->pegawai_id,
+                (int) $tahun,
+                $saldo
+            );
+            $bawaan = SaldoCuti::hitungBawaan(
+                $sisaDuaTahunLalu,
+                $carryForward,
+                $kuotaTahunan
+            );
+            $totalTersedia = max($kuotaTahunan + $bawaan - $cutiTerpakai, 0);
             // Tambahkan property baru ke object pegawai agar bisa dibaca di Vue
             $item->pegawai->sisa_cuti_tersedia = $totalTersedia;
             $item->pegawai->kuota_tahunan      = $kuotaTahunan;
-            $item->pegawai->sisa_tahun_lalu    = $sisaTahunLalu;
+            $item->pegawai->sisa_tahun_lalu    = $carryForward;
             $item->pegawai->cuti_terpakai      = $cutiTerpakai;
             return $item;
         });
+
+
+
 
         return Inertia::render('Atasan/AntreanApproval', [
             'antrean' => $antrean,
@@ -120,6 +158,9 @@ class ApprovalController extends Controller
             'filters' => $request->only(['search', 'jenis_cuti', 'status']),
         ]);
     }
+
+
+
 
     private function isCutiTahunan(?string $jenisCuti): bool
     {
@@ -129,12 +170,18 @@ class ApprovalController extends Controller
         return strtolower(trim((string) $jenisCuti)) === 'cuti tahunan';
     }
 
+
+
+
     // 2. Memproses Persetujuan atau Penolakan
     public function process(Request $request, int $id)
     {
         $request->validate([
             'action' => ['required', 'in:approve,reject'],
         ]);
+
+
+
 
         $pengajuan = PengajuanCuti::with('pegawai')->findOrFail($id);
         $user = Auth::user();
@@ -146,6 +193,9 @@ class ApprovalController extends Controller
             'menunggu_l3' => 4,
             'menunggu_l4' => 6,
         ][$statusSaatIni] ?? null;
+
+
+
 
         // ================= PERBAIKAN: HINDARI HALAMAN 403 POLOS =================
         // SEBELUMNYA: abort(403, ...) di sini melempar response non-Inertia,
@@ -170,9 +220,15 @@ class ApprovalController extends Controller
             return back()->with('error', 'Pengajuan ini sudah selesai diproses sebelumnya. Silakan muat ulang halaman.');
         }
 
+
+
+
         if ($user->role_id !== $roleYangDibutuhkan) {
             return back()->with('error', 'Pengajuan ini sudah berpindah ke tahap persetujuan lain (mungkin baru saja diproses). Silakan muat ulang halaman.');
         }
+
+
+
 
         if ($user->role_id === 2 && $pengajuan->pegawai->tim_kerja !== $user->tim_kerja) {
             return back()->with('error', 'Pengajuan berada di luar tim kerja Anda.');
@@ -193,10 +249,16 @@ class ApprovalController extends Controller
             'menunggu_l4' => 4,
         ][$statusSaatIni];
 
+
+
+
         // --- JIKA DITOLAK / DITANGGUHKAN ---
         if ($request->action === 'reject') {
             $alasanPenolakan = $request->input('catatan', 'Ada agenda/tugas kantor');
             $namaApprover = $user->nama ?? 'Atasan'; // Mengambil nama atasan yang sedang login
+
+
+
 
             // Ambil alasan murni pegawai (bagian sebelum tanda '|')
             $alasanUtama = trim(explode('|', $pengajuan->keterangan)[0]);
@@ -204,8 +266,14 @@ class ApprovalController extends Controller
                 $alasanUtama = 'Tidak ada alasan awal';
             }
 
+
+
+
             // Format kalimat rapi memuat nama atasan & keterangan cuti ulang
             $keteranganBaru = "{$alasanUtama} (Ditangguhkan oleh {$namaApprover}: {$alasanPenolakan} — Pengajuan Cuti Ulang)";
+
+
+
 
             // ================= PERBAIKAN: SUMBER KEBENARAN LEVEL PENOLAK =================
             // Root cause bug "penolakan L1 tampil di kotak L4" di halaman Monitoring
@@ -225,6 +293,9 @@ class ApprovalController extends Controller
             ]);
             // ================= END PERBAIKAN =================
 
+
+
+
             ApprovalLog::create([
                 'pengajuan_id' => $pengajuan->id,
                 'approver_id' => $user->id,
@@ -233,6 +304,9 @@ class ApprovalController extends Controller
                 'catatan' => $alasanPenolakan,
                 'tanggal_keputusan' => now(),
             ]);
+
+
+
 
             // Kirim notifikasi penolakan ke pegawai
             Notifikasi::create([
@@ -243,26 +317,54 @@ class ApprovalController extends Controller
                 'is_read'    => false,
             ]);
 
+
+
+
             return back()->with('success', 'Pengajuan cuti berhasil ditangguhkan.');
         }
+
+
+
 
         // --- JIKA DISETUJUI (LOGIKA ALUR BARU KEMENTAN) ---
         $statusPesan = '';
 
-        
+
+
+
+
+
         // TAHAP 1: L1 MENGAPPROVE (Otomatis lompat L2, langsung ke L3)
         if ($statusSaatIni === 'menunggu_l1' && $user->role_id === 2) {
             // Hapus notifikasi lama milik L1 agar tidak menumpuk
             Notifikasi::where('pegawai_id', $user->id)->where('judul', 'Pengajuan Cuti Baru')->delete();
 
 
+
+
+
+
+
+
             // ALUR STAF: Langsung melompat ke L3 (Kasubag TU)
             $pengajuan->update(['status' => 'menunggu_l3', 'level_saat_ini' => 3, 'atasan_l1_id' => $user->id]);
+
+
+
+
+
+
 
 
             // Kirim Notifikasi ke L3 (Role 4)
             $atasanL3 = Pegawai::where('role_id', 4)->where('kelompok_substansi', $pengajuan->pegawai->kelompok_substansi)->first()
                 ?? Pegawai::where('role_id', 4)->first();
+
+
+
+
+
+
 
 
             if ($atasanL3) {
@@ -278,19 +380,43 @@ class ApprovalController extends Controller
         }
 
 
+
+
+
+
+
+
         // TAHAP 2: L2 MENGAPPROVE (Hanya terjadi jika L1 yang mengajukan cuti)
         elseif ($statusSaatIni === 'menunggu_l2' && $user->role_id === 3) {
             // Hapus notifikasi lama milik L2
             Notifikasi::where('pegawai_id', $user->id)->where('judul', 'Pengajuan Cuti Baru')->delete();
 
 
+
+
+
+
+
+
             // L2 Setuju -> Lanjut ke L3
             $pengajuan->update(['status' => 'menunggu_l3', 'level_saat_ini' => 3]);
+
+
+
+
+
+
 
 
             // Notifikasi ke L3 (Role 4)
             $atasanL3 = Pegawai::where('role_id', 4)->where('kelompok_substansi', $pengajuan->pegawai->kelompok_substansi)->first()
                 ?? Pegawai::where('role_id', 4)->first();
+
+
+
+
+
+
 
 
             if ($atasanL3) {
@@ -306,19 +432,43 @@ class ApprovalController extends Controller
         }
 
 
+
+
+
+
+
+
         // TAHAP 3: L3 MENGAPPROVE (Diteruskan ke L4)
         elseif ($statusSaatIni === 'menunggu_l3' && $user->role_id === 4) {
             // Hapus notifikasi lama milik L3
             Notifikasi::where('pegawai_id', $user->id)->where('judul', 'Pengajuan Cuti Baru')->delete();
 
 
+
+
+
+
+
+
             // L3 Setuju -> Lanjut ke L4
             $pengajuan->update(['status' => 'menunggu_l4', 'level_saat_ini' => 4, 'atasan_l3_id' => $user->id]);
+
+
+
+
+
+
 
 
             // Notifikasi ke L4 (KABIRO - ROLE 6)
             $atasanL4 = Pegawai::where('role_id', 6)->where('kelompok_substansi', $pengajuan->pegawai->kelompok_substansi)->first()
                 ?? Pegawai::where('role_id', 6)->first();
+
+
+
+
+
+
 
 
             if ($atasanL4) {
@@ -334,10 +484,22 @@ class ApprovalController extends Controller
         }
 
 
+
+
+
+
+
+
         // TAHAP 4: L4 MENGAPPROVE (FINAL)
         elseif ($statusSaatIni === 'menunggu_l4' && $user->role_id === 6) { // KABIRO = ROLE 6
             // Hapus notifikasi lama milik L4
             Notifikasi::where('pegawai_id', $user->id)->where('judul', 'Pengajuan Cuti Baru')->delete();
+
+
+
+
+
+
 
 
             if ($this->isCutiTahunan($pengajuan->jenis_cuti)) {
@@ -346,10 +508,22 @@ class ApprovalController extends Controller
                     ->first();
 
 
+
+
+
+
+
+
                 if (!$saldo || $saldo->sisa < $pengajuan->jumlah_hari) {
                     return back()->with('error', 'Saldo Cuti Tahunan tidak mencukupi untuk menyetujui pengajuan ini.');
                 }
             }
+
+
+
+
+
+
 
 
             // L4 Setuju -> Status FINAL (Disetujui)
@@ -360,14 +534,32 @@ class ApprovalController extends Controller
             ]);
 
 
+
+
+
+
+
+
             // Potong saldo HANYA untuk jenis cuti tahunan (Dieksekusi di akhir/final)
             if ($this->isCutiTahunan($pengajuan->jenis_cuti)) {
                 $saldo->decrement('sisa', $pengajuan->jumlah_hari);
             }
 
 
+
+
+
+
+
+
             $statusPesan = 'Disetujui Kepala Biro Perencanaan (L4)';
         }
+
+
+
+
+
+
 
 
         // Kirim Notifikasi Update Status ke Pegawai Pemohon
@@ -382,6 +574,12 @@ class ApprovalController extends Controller
             ]);
 
 
+
+
+
+
+
+
             Notifikasi::create([
                 'pegawai_id' => $targetUserId,
                 'judul'      => 'Status Cuti Diperbarui',
@@ -392,8 +590,20 @@ class ApprovalController extends Controller
         }
 
 
+
+
+
+
+
+
         return back()->with('success', 'Pengajuan cuti berhasil diproses dan diteruskan.');
     }
+
+
+
+
+
+
 
 
     public function approve(Request $request, int $id)
@@ -403,11 +613,23 @@ class ApprovalController extends Controller
     }
 
 
+
+
+
+
+
+
     public function reject(Request $request, int $id)
     {
         $request->merge(['action' => 'reject']);
         return $this->process($request, $id);
     }
+
+
+
+
+
+
 
 
     // 3. Menampilkan Riwayat Approval
@@ -416,6 +638,12 @@ class ApprovalController extends Controller
         $user = Auth::user();
         // Menambahkan relasi 'saldoCutiTahunIni' pada riwayat
         $query = PengajuanCuti::with(['pegawai.saldoCutiTahunIni']);
+
+
+
+
+
+
 
 
         // Logika filter riwayat: Tampilkan data yang SUDAH melewati tahap/level atasan tersebut
@@ -439,6 +667,12 @@ class ApprovalController extends Controller
         }
 
 
+
+
+
+
+
+
         // Fitur pencarian nama pegawai
         if ($request->filled('search')) {
             $query->whereHas('pegawai', function ($q) use ($request) {
@@ -447,7 +681,19 @@ class ApprovalController extends Controller
         }
 
 
+
+
+
+
+
+
         $riwayat = $query->orderBy('updated_at', 'desc')->paginate(10)->withQueryString();
+
+
+
+
+
+
 
 
         return Inertia::render('Atasan/RiwayatApproval', [
@@ -456,3 +702,6 @@ class ApprovalController extends Controller
         ]);
     }
 }
+
+
+

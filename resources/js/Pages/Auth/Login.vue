@@ -335,7 +335,7 @@ const handleForgotPassword = () => {
                 class="text-center text-[11px] text-black font-semibold drop-shadow-sm"
             >
                 &copy; 2026 Kementerian Pertanian Republik Indonesia - Biro
-                Organisasi dan Kepegawaian.
+                Perencanaan.
             </div>
         </div>
     </div>

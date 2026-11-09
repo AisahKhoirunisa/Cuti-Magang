@@ -19,12 +19,21 @@ const props = defineProps({
     kelompok_substansi: String,
     hariLiburs: Array, // Menerima data dari Controller (Database Admin HR)
     listKelompok: Array, // Dipakai untuk filter L3 & L4
-    listTimKerja: Array, // Dipakai untuk filter L2
+    listTimKerja: Array, // Dipakai untuk filter L1 & L2
     userRoleId: Number, // 1=Staff, 2=L1, 3=L2, 4=L3, 6=L4
-    userTimKerja: String, // Nama tim kerja user (dipakai untuk badge info L1)
+    // Nama tim kerja user. Sebelumnya dipakai badge info L1
+    // ("Menampilkan tim Anda: ..."); badge itu sudah digantikan dropdown
+    // filter, prop tetap diterima supaya kontrak dengan controller tidak berubah.
+    userTimKerja: String,
     // ID pegawai yang sedang login, dikirim dari controller. Dipakai
     // untuk menandai entri milik sendiri dengan "(Anda)".
     userPegawaiId: Number,
+    // Jumlah pengajuan disetujui pada bulan yang sedang dilihat,
+    // dihitung di CutiController::teamCalendar() ($cutiTim->count()).
+    disetujuiBulanIni: {
+        type: Number,
+        default: 0,
+    },
 });
 
 // ================= BULAN YANG DILIHAT =================
@@ -35,7 +44,7 @@ const parseBulan = (s) => {
         : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 };
 const formatBulan = (d) =>
-    `d.getFullYear()-{String(d.getMonth() + 1).padStart(2, "0")}`;
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 
 const currentDate = ref(parseBulan(props.bulan));
 const memuat = ref(false); // true selama data bulan baru dimuat dari server
@@ -74,7 +83,7 @@ const tahunAktif = computed(() => currentDate.value.getFullYear());
 // mendatang, dan jelas di hari ini. Lebih akurat untuk cuti yang sedang
 // berjalan.
 const toDateStr = (d) =>
-    `d.getFullYear()-{String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const todayStr = toDateStr(new Date());
 
 const isLampau = (dateStr) => !!dateStr && dateStr < todayStr;
@@ -82,24 +91,20 @@ const isHariIni = (dateStr) => dateStr === todayStr;
 // ================= END HELPER LAMPAU / HARI INI =================
 
 // --- FITUR FILTER BERJENJANG SESUAI LEVEL ATASAN ---
-// L1 (role_id 2)       : TANPA dropdown filter, otomatis hanya lihat
-//                        staff di tim_kerja-nya sendiri. Ditampilkan
-//                        badge info "Menampilkan tim Anda: ...".
-// L2 (role_id 3)       : filter berdasarkan Tim Kerja (dalam kelompoknya)
+// L1 (role_id 2) & L2 (role_id 3): filter berdasarkan Tim Kerja (dalam
+//                        kelompoknya). [DIUBAH] Sebelumnya L1 TANPA dropdown
+//                        dan hanya melihat tim_kerja-nya sendiri; sekarang L1
+//                        memakai mode filter yang sama dengan L2 (mode "l2").
 // L3 & L4 (role_id 4/6): filter berdasarkan Subbagian/Kelompok (lintas kelompok)
 // Staff & lainnya      : tanpa filter (perilaku lama)
 const filterMode = computed(() => {
-    if (props.userRoleId === 2) return "l1";
-    if (props.userRoleId === 3) return "l2";
+    if (props.userRoleId === 2 || props.userRoleId === 3) return "l2";
     if (props.userRoleId === 4 || props.userRoleId === 6) return "l3l4";
     return "none";
 });
 
 const showFilterDropdown = computed(
     () => filterMode.value === "l2" || filterMode.value === "l3l4",
-);
-const showBadgeTimL1 = computed(
-    () => filterMode.value === "l1" && !!props.userTimKerja,
 );
 
 // Field di object pegawai yang dipakai untuk mencocokkan filter lokal
@@ -148,6 +153,8 @@ const selectedFilter = ref(initialFilterFromUrl ?? filterAllLabel.value);
 // kita minta ulang ke server. `only` membuat permintaan ringan: hariLiburs
 // dan prop lain tidak dikirim ulang. Parameter `bulan` ada di URL, jadi
 // refresh atau berbagi tautan tetap membuka bulan yang sama.
+// 'disetujuiBulanIni' ikut di `only` supaya angka di kartu ikut diperbarui
+// saat pindah bulan.
 const muatKalender = (targetDate) => {
     router.get(
         window.location.pathname,
@@ -162,7 +169,7 @@ const muatKalender = (targetDate) => {
             preserveState: true,
             preserveScroll: true,
             replace: true,
-            only: ["cutiTim", "bulan"],
+            only: ["cutiTim", "bulan", "disetujuiBulanIni"],
             onStart: () => (memuat.value = true),
             onFinish: () => (memuat.value = false),
         },
@@ -181,11 +188,7 @@ const gantiBulan = (selisih) => {
 const prevMonth = () => gantiBulan(-1);
 const nextMonth = () => gantiBulan(1);
 const keBulanIni = () => {
-    const target = new Date(
-        new Date().getFullYear(),
-        new Date().getMonth(),
-        1,
-    );
+    const target = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
     currentDate.value = target;
     muatKalender(target);
 };
@@ -193,6 +196,55 @@ const keBulanIni = () => {
 // Dropdown filter ikut membawa bulan yang sedang dilihat
 const applyFilter = () => muatKalender(currentDate.value);
 // ================= END MUAT DATA PER BULAN =================
+
+// ================================================================
+// DROPDOWN FILTER KUSTOM (Tim Kerja / Kelompok)
+// BARU: menggantikan <select> bawaan browser (yang daftarnya melebar
+// melewati layar & tampilannya tidak bisa diatur). Gaya disamakan dengan
+// dropdown filter di Riwayat Pengajuan: tombol berikon + panah, daftar
+// SELALU terbuka ke bawah dengan lebar SAMA dengan tombolnya, tinggi
+// dibatasi (bisa di-scroll), teks panjang membungkus (tidak terpotong),
+// opsi terpilih berwarna hijau + tanda centang. Menutup saat klik di luar
+// (elemen tanpa atribut data-dropdown) atau menekan Esc.
+// Nilai tetap disimpan di `selectedFilter` dan tetap memanggil
+// applyFilter(), sehingga logika filter & parameter URL TIDAK berubah.
+// ================================================================
+const dropdownTerbuka = ref(false);
+
+const toggleDropdown = () => {
+    dropdownTerbuka.value = !dropdownTerbuka.value;
+};
+const tutupDropdown = () => {
+    dropdownTerbuka.value = false;
+};
+
+// Opsi bernilai "-" (pegawai yang tidak punya tim/kelompok) ditampilkan
+// sebagai teks yang jelas. Hanya LABEL yang diganti; nilai asli ("-") tetap
+// dipakai untuk mencocokkan filter & parameter URL, jadi logika tidak berubah.
+const labelOpsi = (opsi) => {
+    const kosong = !opsi || String(opsi).trim() === "-";
+    if (!kosong) return opsi;
+    return filterMode.value === "l2" ? "Tanpa Tim Kerja" : "Tanpa Kelompok";
+};
+
+const opsiFilterLengkap = computed(() => [
+    filterAllLabel.value,
+    ...filterOptions.value,
+]);
+
+const pilihFilter = (opsi) => {
+    const berubah = selectedFilter.value !== opsi;
+    selectedFilter.value = opsi;
+    tutupDropdown();
+    if (berubah) applyFilter();
+};
+
+const tutupDropdownSaatKlikLuar = (event) => {
+    if (!event.target.closest?.("[data-dropdown]")) {
+        dropdownTerbuka.value = false;
+    }
+};
+// ================= END DROPDOWN FILTER KUSTOM =================
 
 // DAFTAR HARI LIBUR DINAMIS DIAMBIL DARI DATABASE ADMIN HR
 const holidayList = computed(() => {
@@ -253,24 +305,32 @@ const isDisetujui = (item) => !item?.status || item.status === "disetujui";
 const bolehTampil = (item) => isDisetujui(item);
 // ================= END PENANDA =================
 
+// Apakah filter dropdown sedang aktif memilih satu tim/kelompok tertentu.
+const filterAktif = computed(
+    () =>
+        showFilterDropdown.value &&
+        selectedFilter.value !== filterAllLabel.value &&
+        selectedFilter.value !== "",
+);
+
+// Filter lokal (fallback) sesuai mode filter yang aktif.
+const cocokDenganFilter = (item) => {
+    if (!filterAktif.value) return true;
+    const nilaiPegawai =
+        item.pegawai?.[filterFieldName.value] ??
+        (filterFieldName.value === "kelompok_substansi"
+            ? props.kelompok_substansi
+            : null);
+    return nilaiPegawai === selectedFilter.value;
+};
+
 // Filter cuti: menyaring status yang boleh tampil, lalu filter lokal
 // (fallback) sesuai mode filter yang aktif.
 const getCutiOnDate = (dateStr) => {
     if (!dateStr) return [];
     let filteredCuti = (props.cutiTim || []).filter(bolehTampil);
-    if (
-        showFilterDropdown.value &&
-        selectedFilter.value !== filterAllLabel.value &&
-        selectedFilter.value !== ""
-    ) {
-        filteredCuti = filteredCuti.filter((item) => {
-            const nilaiPegawai =
-                item.pegawai?.[filterFieldName.value] ??
-                (filterFieldName.value === "kelompok_substansi"
-                    ? props.kelompok_substansi
-                    : null);
-            return nilaiPegawai === selectedFilter.value;
-        });
+    if (filterAktif.value) {
+        filteredCuti = filteredCuti.filter(cocokDenganFilter);
     }
     return filteredCuti.filter((item) => {
         return dateStr >= item.tanggal_mulai && dateStr <= item.tanggal_selesai;
@@ -491,12 +551,23 @@ const tanggalModalPanjang = computed(() =>
     formatTanggalPanjang(selectedDateData.value?.date),
 );
 
-// Tekan Esc untuk menutup pop up
+// Tekan Esc untuk menutup dropdown filter, lalu pop up
 const onKeydown = (e) => {
-    if (e.key === "Escape" && selectedDateData.value) closeModal();
+    if (e.key !== "Escape") return;
+    if (dropdownTerbuka.value) {
+        tutupDropdown();
+        return;
+    }
+    if (selectedDateData.value) closeModal();
 };
-onMounted(() => window.addEventListener("keydown", onKeydown));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+onMounted(() => {
+    window.addEventListener("keydown", onKeydown);
+    document.addEventListener("click", tutupDropdownSaatKlikLuar);
+});
+onBeforeUnmount(() => {
+    window.removeEventListener("keydown", onKeydown);
+    document.removeEventListener("click", tutupDropdownSaatKlikLuar);
+});
 </script>
 
 <template>
@@ -514,61 +585,123 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                         Jadwal Cuti Tim
                     </h1>
                     <p class="text-slate-500 mt-1 text-sm">
-                        Pantau kalender kehadiran dan jadwal cuti anggota tim Anda.
+                        Pantau kalender kehadiran dan jadwal cuti anggota tim
+                        Anda.
                     </p>
-                    <!-- BADGE INFO KHUSUS L1 -->
-                    <div
-                        v-if="showBadgeTimL1"
-                        class="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded-full bg-green-50 border border-green-200 text-green-700 text-xs font-semibold"
-                    >
-                        <svg
-                            class="w-3.5 h-3.5 shrink-0"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                        >
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 100-8 4 4 0 000 8zm6 3c0-2.21-3.582-4-8-4s-8 1.79-8 4"
-                            ></path>
-                        </svg>
-                        <span>Menampilkan tim Anda: {{ userTimKerja }}</span>
-                    </div>
+                    <!-- [DIHAPUS] Badge info khusus L1 ("Menampilkan tim Anda: ...").
+                         Digantikan oleh dropdown filter "Semua Tim Kerja" yang
+                         sekarang juga tampil untuk L1. -->
                 </div>
 
                 <!-- TOOLBAR AKSI (Filter & Navigasi Bulan) -->
-                <div class="flex flex-col sm:flex-row items-center gap-3">
-                    <div class="relative w-full sm:w-auto" v-if="showFilterDropdown">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <svg class="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path>
-                            </svg>
-                        </div>
-                        <select
-                            id="filter-kalender-tim"
-                            name="kelompok"
-                            aria-label="Filter tim atau kelompok pada kalender"
-                            v-model="selectedFilter"
-                            @change="applyFilter"
-                            class="appearance-none min-h-[44px] pl-9 pr-10 py-2.5 w-full sm:min-w-[240px] bg-white border border-slate-200 rounded-xl shadow-sm text-base sm:text-sm font-medium text-slate-700 hover:border-slate-300 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors cursor-pointer"
+                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                    <!-- ================= DROPDOWN FILTER KUSTOM =================
+                         Di HP: selebar layar. Di layar >= sm: lebar tetap 18rem.
+                         Daftar pilihan selalu selebar tombolnya, teks panjang
+                         membungkus ke baris berikutnya. -->
+                    <div
+                        v-if="showFilterDropdown"
+                        data-dropdown
+                        class="relative w-full sm:w-72"
+                    >
+                        <div
+                            class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
                         >
-                            <option :value="filterAllLabel">{{ filterAllLabel }}</option>
-                            <option
-                                v-for="opsi in filterOptions"
-                                :key="opsi"
-                                :value="opsi"
+                            <svg
+                                class="h-4 w-4 text-slate-400"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
                             >
-                                {{ opsi }}
-                            </option>
-                        </select>
-                        <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                            <svg class="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+                                ></path>
                             </svg>
                         </div>
+
+                        <button
+                            id="filter-kalender-tim"
+                            type="button"
+                            aria-label="Filter tim atau kelompok pada kalender"
+                            aria-haspopup="listbox"
+                            :aria-expanded="dropdownTerbuka"
+                            :title="labelOpsi(selectedFilter)"
+                            @click="toggleDropdown"
+                            class="w-full min-h-[44px] text-left text-sm font-medium bg-white border rounded-xl shadow-sm text-slate-700 py-2.5 pl-9 pr-10 cursor-pointer hover:border-slate-300 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors"
+                            :class="
+                                dropdownTerbuka
+                                    ? 'border-green-500 ring-1 ring-green-500'
+                                    : 'border-slate-200'
+                            "
+                        >
+                            <span class="block truncate">{{
+                                labelOpsi(selectedFilter)
+                            }}</span>
+                        </button>
+
+                        <span
+                            class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none"
+                        >
+                            <svg
+                                class="h-4 w-4 text-slate-400 transition-transform"
+                                :class="{ 'rotate-180': dropdownTerbuka }"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
+                            </svg>
+                        </span>
+
+                        <ul
+                            v-if="dropdownTerbuka"
+                            role="listbox"
+                            class="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
+                        >
+                            <li v-for="opsi in opsiFilterLengkap" :key="opsi">
+                                <button
+                                    type="button"
+                                    role="option"
+                                    :title="labelOpsi(opsi)"
+                                    :aria-selected="selectedFilter === opsi"
+                                    @click="pilihFilter(opsi)"
+                                    class="flex w-full items-start justify-between gap-2 whitespace-normal break-words leading-snug px-3.5 py-2.5 text-left text-sm cursor-pointer transition-colors"
+                                    :class="
+                                        selectedFilter === opsi
+                                            ? 'bg-green-50 text-green-700 font-semibold'
+                                            : 'text-slate-700 hover:bg-slate-50'
+                                    "
+                                >
+                                    <span class="min-w-0">{{
+                                        labelOpsi(opsi)
+                                    }}</span>
+                                    <svg
+                                        v-if="selectedFilter === opsi"
+                                        class="w-4 h-4 shrink-0 mt-0.5 text-green-600"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2.5"
+                                            d="M5 13l4 4L19 7"
+                                        ></path>
+                                    </svg>
+                                </button>
+                            </li>
+                        </ul>
                     </div>
+                    <!-- ================= END DROPDOWN FILTER KUSTOM ================= -->
 
                     <!-- Navigasi Bulan -->
                     <div
@@ -622,7 +755,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                         <button
                             type="button"
                             @click.prevent="keBulanIni"
-                            class="text-xs font-semibold text-green-700 hover:bg-green-50 px-2 py-1 rounded-lg transition cursor-pointer"
+                            class="whitespace-nowrap text-xs font-semibold text-green-700 hover:bg-green-50 px-2 py-1 rounded-lg transition cursor-pointer"
                         >
                             Hari ini
                         </button>
@@ -740,10 +873,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                 getCutiOnDate(day.dateString).length > 0
                             "
                             class="lg:hidden flex flex-wrap items-center gap-0.5 sm:gap-1 mt-1 px-0.5"
-                            :class="isLampau(day.dateString) ? 'opacity-50' : ''"
+                            :class="
+                                isLampau(day.dateString) ? 'opacity-50' : ''
+                            "
                         >
                             <span
-                                v-for="cuti in getCutiTitikDiGrid(day.dateString)"
+                                v-for="cuti in getCutiTitikDiGrid(
+                                    day.dateString,
+                                )"
                                 :key="cuti.id"
                                 class="w-2 h-2 rounded-full shrink-0"
                                 :class="[
@@ -774,7 +911,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                             v-if="day.isCurrentMonth"
                         >
                             <template
-                                v-for="cuti in getCutiRingkasDiGrid(day.dateString)"
+                                v-for="cuti in getCutiRingkasDiGrid(
+                                    day.dateString,
+                                )"
                                 :key="cuti.id"
                             >
                                 <div
@@ -817,8 +956,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
             <!-- Petunjuk untuk HP -->
             <p class="lg:hidden text-center text-xs text-slate-400 -mt-1">
-                Ketuk tanggal bertanda titik untuk melihat siapa saja yang
-                cuti.
+                Ketuk tanggal bertanda titik untuk melihat siapa saja yang cuti.
             </p>
 
             <div
@@ -849,7 +987,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                 </div>
                 <!-- Keterangan tanggal yang sudah lewat -->
                 <div class="flex items-center gap-1.5">
-                    <span class="w-4 h-2.5 rounded-sm bg-slate-300 opacity-60"></span>
+                    <span
+                        class="w-4 h-2.5 rounded-sm bg-slate-300 opacity-60"
+                    ></span>
                     Sudah lewat
                 </div>
             </div>
@@ -895,8 +1035,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                 v-if="selectedDateData.list.length > 0"
                                 class="text-xs text-slate-500 mt-0.5"
                             >
-                                {{ selectedDateData.list.length }} pegawai
-                                cuti
+                                {{ selectedDateData.list.length }} pegawai cuti
                             </p>
                             <!-- Status tanggal: riwayat / hari ini -->
                             <p
@@ -941,9 +1080,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                         class="shrink-0 px-5 pt-3"
                     >
                         <div class="relative">
-                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <svg class="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"></path>
+                            <div
+                                class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+                            >
+                                <svg
+                                    class="h-4 w-4 text-slate-400"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2"
+                                        d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"
+                                    ></path>
                                 </svg>
                             </div>
                             <input
@@ -991,14 +1142,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
                         <!-- Pesan kalau hasil pencarian kosong -->
                         <p
-                            v-if="selectedDateData.list.length > 0 && groupedModalList.length === 0"
+                            v-if="
+                                selectedDateData.list.length > 0 &&
+                                groupedModalList.length === 0
+                            "
                             class="text-center text-sm text-slate-400 py-6"
                         >
                             Tidak ada pegawai dengan nama tersebut.
                         </p>
 
                         <!-- OPSI B: DAFTAR PEGAWAI CUTI PER JENIS CUTI -->
-                        <div v-if="groupedModalList.length > 0" class="space-y-4">
+                        <div
+                            v-if="groupedModalList.length > 0"
+                            class="space-y-4"
+                        >
                             <div
                                 v-for="grup in groupedModalList"
                                 :key="grup.jenis"
@@ -1028,10 +1185,15 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                             <img
                                                 v-if="item.pegawai?.foto_profil"
                                                 :src="`/storage/${item.pegawai.foto_profil}`"
-                                                :alt="item.pegawai?.nama || 'Pegawai'"
+                                                :alt="
+                                                    item.pegawai?.nama ||
+                                                    'Pegawai'
+                                                "
                                                 class="w-full h-full object-cover"
                                             />
-                                            <span v-else>{{ getInisial(item.pegawai?.nama) }}</span>
+                                            <span v-else>{{
+                                                getInisial(item.pegawai?.nama)
+                                            }}</span>
                                         </div>
                                         <div class="min-w-0 flex-1">
                                             <div
@@ -1041,7 +1203,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                                     class="font-semibold text-slate-800 text-sm truncate"
                                                     :title="item.pegawai?.nama"
                                                 >
-                                                    {{ item.pegawai?.nama || "Pegawai" }}
+                                                    {{
+                                                        item.pegawai?.nama ||
+                                                        "Pegawai"
+                                                    }}
                                                     <span
                                                         v-if="isMilikSaya(item)"
                                                         class="text-green-600 font-bold"
@@ -1052,14 +1217,18 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                                             <div
                                                 class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1"
                                             >
-                                                <span class="text-xs text-slate-500">
+                                                <span
+                                                    class="text-xs text-slate-500"
+                                                >
                                                     {{ formatRentang(item) }}
                                                     <span class="text-slate-300"
                                                         >·</span
                                                     >
                                                     <span
                                                         class="font-semibold text-slate-700"
-                                                        >{{ getDurasiHari(item) }}
+                                                        >{{
+                                                            getDurasiHari(item)
+                                                        }}
                                                         Hari</span
                                                     >
                                                 </span>
@@ -1088,4 +1257,3 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         </Transition>
     </Teleport>
 </template>
-

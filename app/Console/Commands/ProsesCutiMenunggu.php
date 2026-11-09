@@ -10,6 +10,7 @@ use App\Models\Pegawai;
 use App\Models\PengajuanCuti;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -126,7 +127,7 @@ class ProsesCutiMenunggu extends Command
 
 
         // Bersihkan notifikasi lama sebelum membuat notifikasi kedaluwarsa baru
-        $this->bersihkanNotifikasiLama($p, $statusLama, $penerima, false);
+        $this->bersihkanNotifikasiLama($p, $statusLama, $penerima, $dryRun);
 
 
         if ($p->pegawai) {
@@ -350,7 +351,7 @@ class ProsesCutiMenunggu extends Command
     }
 
 
-    private function hapus($query, bool $dryRun): int
+    private function hapus(Builder $query, bool $dryRun): int
     {
         return $dryRun ? (int) $query->count() : (int) $query->delete();
     }
@@ -409,8 +410,11 @@ class ProsesCutiMenunggu extends Command
     }
 
 
-    private function tgl($tanggal): string
+    private function tgl(\DateTimeInterface|string $tanggal): string
     {
         return Carbon::parse($tanggal)->format('d/m/Y');
     }
 }
+
+
+

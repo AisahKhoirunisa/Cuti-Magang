@@ -6,9 +6,12 @@ use App\Http\Controllers\MonitoringCutiController;
 use App\Http\Controllers\RekapKuotaDetailController;
 use App\Http\Controllers\CutiController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\FcmTokenController; // BARU
+use App\Http\Controllers\LampiranController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PembatalanController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Middleware\PreventBackHistory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
@@ -20,8 +23,8 @@ Route::get('/', function () {
 });
 
 
-// 1. Rute Ganti Password Pertama Kali (hanya 'auth')
-Route::middleware('auth')->group(function () {
+// 1. Rute Ganti Password Pertama Kali ('auth' + PreventBackHistory)
+Route::middleware(['auth', PreventBackHistory::class])->group(function () {
 
 
     Route::get('/ganti-password', function () {
@@ -46,8 +49,10 @@ Route::middleware('auth')->group(function () {
 });
 
 
-// 2. Rute Utama Aplikasi (butuh 'auth' + 'force.password')
-Route::middleware(['auth', 'force.password'])->group(function () {
+// 2. Rute Utama Aplikasi (butuh 'auth' + 'force.password' + PreventBackHistory)
+// PreventBackHistory: melarang browser menyimpan halaman di cache Back/Forward,
+// sehingga setelah logout tombol "Back" tidak menampilkan halaman lama.
+Route::middleware(['auth', 'force.password', PreventBackHistory::class])->group(function () {
 
 
     // ==========================================
@@ -56,18 +61,37 @@ Route::middleware(['auth', 'force.password'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
 
+    // Lampiran cuti (disk private) — hak akses dicek di controller
+    Route::get('/lampiran/{id}', [LampiranController::class, 'unduh'])
+        ->whereNumber('id')
+        ->name('lampiran.unduh');
+
+
     // --- Notifikasi ---
     Route::post('/notifications/read-all', [NotificationController::class, 'markAllAsRead'])->name('notifications.readAll');
     Route::delete('/notifications/clear-all', [NotificationController::class, 'destroyAll'])->name('notifications.destroyAll');
-    Route::delete('/notifikasi/{id}', [NotificationController::class, 'destroy'])->name('notifikasi.destroy');
+    Route::delete('/notifikasi/{id}', [NotificationController::class, 'destroy'])
+        ->whereNumber('id')
+        ->name('notifikasi.destroy');
+
+
+    // Simpan token perangkat untuk Web Push (FCM) // BARU
+    Route::post('/fcm-token', [FcmTokenController::class, 'store'])
+        ->middleware('throttle:20,1')
+        ->name('fcm.store');
+    Route::delete('/fcm-token', [FcmTokenController::class, 'destroy'])
+        ->middleware('throttle:20,1')
+        ->name('fcm.destroy');
 
 
     // Profile (Breeze)
-    // CATATAN: DELETE /profile memungkinkan pegawai menghapus akunnya sendiri.
-    // Untuk sistem kepegawaian sebaiknya dihapus (beserta tombolnya di Profile/Edit.vue).
+    // CATATAN: route DELETE /profile (ProfileController@destroy, name: profile.destroy)
+    // SENGAJA tidak didaftarkan karena memungkinkan pegawai menghapus akunnya
+    // sendiri. Kalau suatu saat dibutuhkan lagi, tambahkan:
+    //   Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+    // (dan pastikan tombol hapus akun di Profile/Edit.vue juga ikut dikembalikan).
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
-    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 
 
     // ==========================================
@@ -112,11 +136,6 @@ Route::middleware(['auth', 'force.password'])->group(function () {
         Route::post('/atasan/approval/{id}/reject', [MonitoringCutiController::class, 'reject'])->name('atasan.approval.reject');
 
 
-        // Penangguhan Cuti (ex pembatalan)
-        Route::get('/atasan/penangguhan-cuti', [PembatalanController::class, 'index'])->name('atasan.penangguhan');
-        Route::post('/atasan/penangguhan-cuti/{id}', [PembatalanController::class, 'process'])->name('atasan.penangguhan.process');
-
-
         // Rekap Kuota Pegawai (Atasan) — read-only, tanpa Impor & tanpa Export
         Route::get('/atasan/rekap-kuota', [RekapKuotaDetailController::class, 'indexAtasan'])->name('atasan.kuota');
     });
@@ -124,10 +143,14 @@ Route::middleware(['auth', 'force.password'])->group(function () {
 
     // ==========================================
     // Penangguhan cuti oleh Kepala Biro — HANYA role 6
-    // Dipisah dari grup admin karena AdminController::suspendCuti()
-    // mensyaratkan role 6 (L4), bukan Admin HR.
+    // Termasuk AdminController::suspendCuti() yang mensyaratkan role 6 (L4),
+    // bukan Admin HR, sehingga ditaruh di grup ini dan bukan di grup Admin.
     // ==========================================
     Route::middleware('role:6')->where(['id' => '[0-9]+'])->group(function () {
+        Route::get('/atasan/penangguhan-cuti', [PembatalanController::class, 'index'])->name('atasan.penangguhan');
+        Route::post('/atasan/penangguhan-cuti/{id}', [PembatalanController::class, 'process'])->name('atasan.penangguhan.process');
+
+
         Route::post('/admin/pengajuan-cuti/{id}/tangguhkan', [AdminController::class, 'suspendCuti'])->name('admin.cuti.tangguhkan');
     });
 
@@ -144,6 +167,12 @@ Route::middleware(['auth', 'force.password'])->group(function () {
         Route::post('/admin/pegawai/import', [AdminController::class, 'importPegawai'])->name('admin.pegawai.import');
         Route::post('/admin/pegawai/{id}/reset-password', [AdminController::class, 'resetPasswordPegawai'])->name('admin.pegawai.reset-password');
         Route::delete('/admin/pegawai/{id}', [AdminController::class, 'destroyPegawai'])->name('admin.pegawai.destroy');
+
+
+        // Hapus massal (checkbox di KelolaPegawai.vue)
+        // Path statis, tidak bentrok dengan {id} karena constraint [0-9]+
+        Route::delete('/admin/pegawai/destroy-massal', [AdminController::class, 'destroyMassal'])
+            ->name('admin.pegawai.destroy-massal');
 
 
         Route::get('/admin/saldo-cuti', [AdminController::class, 'kelolaSaldo'])->name('admin.saldo');
@@ -175,6 +204,3 @@ Route::middleware(['auth', 'force.password'])->group(function () {
 
 
 require __DIR__ . '/auth.php';
-
-
-
