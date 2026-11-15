@@ -46,6 +46,17 @@ const props = defineProps({
         type: Boolean,
         default: null,
     },
+    // Cuti Alasan Penting hanya untuk PNS (dikirim CutiController@create).
+    boleh_cuti_alasan_penting: {
+        type: Boolean,
+        default: true,
+    },
+    // Cuti Melahirkan hanya untuk perempuan, dibaca dari digit ke-15 NIP
+    // (2 = perempuan). Dikirim CutiController@create.
+    boleh_cuti_melahirkan: {
+        type: Boolean,
+        default: true,
+    },
     // Hari Cuti Tahunan yang masih menunggu persetujuan (sudah mengurangi
     // sisa_cuti). Dikirim CutiController@create.
     cuti_menunggu: {
@@ -83,6 +94,10 @@ const canChooseCutiBesar = computed(() =>
         ? props.boleh_cuti_besar
         : masaKerjaTahun.value >= 5,
 );
+
+const canChooseAlasanPenting = computed(() => props.boleh_cuti_alasan_penting);
+
+const canChooseMelahirkan = computed(() => props.boleh_cuti_melahirkan);
 // ================= END MASA KERJA =================
 
 // ================= ALUR PERSETUJUAN DINAMIS =================
@@ -94,7 +109,10 @@ const LEVEL_INFO = {
     4: { judul: "Kepala Biro", sub: "Perencanaan (L4)" },
 };
 
-const teks = (v) => String(v ?? "").trim().toUpperCase();
+const teks = (v) =>
+    String(v ?? "")
+        .trim()
+        .toUpperCase();
 
 const kategoriPemohon = computed(() => {
     const u = authUser.value || {};
@@ -215,6 +233,7 @@ watch(
 // Menutup saat klik di luar (elemen tanpa atribut data-dropdown) atau Esc.
 // Nilai tetap disimpan di form.jenis_cuti.
 // Opsi "Cuti Besar" terkunci (disabled) bila masa kerja belum memenuhi syarat.
+// Opsi "Cuti Alasan Penting" terkunci bila pegawai bukan PNS.
 // ================================================================
 const dropdownJenisTerbuka = ref(false);
 
@@ -224,7 +243,13 @@ const toggleDropdownJenis = () => {
 
 const opsiJenisCuti = computed(() => [
     { value: "Cuti Tahunan", label: "Cuti Tahunan", disabled: false },
-    { value: "Cuti Melahirkan", label: "Cuti Melahirkan", disabled: false },
+    {
+        value: "Cuti Melahirkan",
+        label: canChooseMelahirkan.value
+            ? "Cuti Melahirkan"
+            : "Cuti Melahirkan (Hanya untuk pegawai perempuan)",
+        disabled: !canChooseMelahirkan.value,
+    },
     {
         value: "Cuti Besar",
         label: canChooseCutiBesar.value
@@ -234,15 +259,15 @@ const opsiJenisCuti = computed(() => [
     },
     {
         value: "Cuti Alasan Penting",
-        label: "Cuti Alasan Penting",
-        disabled: false,
+        label: canChooseAlasanPenting.value
+            ? "Cuti Alasan Penting"
+            : "Cuti Alasan Penting (Hanya untuk PNS)",
+        disabled: !canChooseAlasanPenting.value,
     },
 ]);
 
 const jenisCutiTerpilihLabel = computed(() => {
-    const cocok = opsiJenisCuti.value.find(
-        (o) => o.value === form.jenis_cuti,
-    );
+    const cocok = opsiJenisCuti.value.find((o) => o.value === form.jenis_cuti);
     return cocok ? cocok.label : form.jenis_cuti || "Pilih jenis cuti";
 });
 
@@ -362,9 +387,7 @@ const toggleAlamatDomisili = (e) => {
 };
 
 const toggleNomorTeleponProfil = (e) => {
-    form.no_telp = e.target.checked
-        ? authUser.value.no_telepon || ""
-        : "";
+    form.no_telp = e.target.checked ? authUser.value.no_telepon || "" : "";
 };
 
 const resetSemuaForm = () => {
@@ -399,8 +422,18 @@ const selisihHariInklusif = (a, b) =>
     Math.round((parseLocalDate(b) - parseLocalDate(a)) / 86400000) + 1;
 
 const namaBulanSingkat = [
-    "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
-    "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "Mei",
+    "Jun",
+    "Jul",
+    "Agu",
+    "Sep",
+    "Okt",
+    "Nov",
+    "Des",
 ];
 
 // Contoh: "21 – 23 Okt 2026", "28 Okt – 2 Nov 2026", "31 Des 2026 – 1 Jan 2027"
@@ -477,11 +510,7 @@ const normalisasiLibur = (libur) => {
         (v) => v === true || v === 1 || v === "1",
     );
     const jenisMentah = String(
-        libur.jenis ??
-            libur.tipe ??
-            libur.kategori ??
-            libur.jenis_libur ??
-            "",
+        libur.jenis ?? libur.tipe ?? libur.kategori ?? libur.jenis_libur ?? "",
     ).toLowerCase();
 
     const isCutiBersama =
@@ -516,9 +545,7 @@ const hariLiburSet = computed(() => {
 
 const liburMap = computed(
     () =>
-        new Map(
-            props.hariLiburs.map((h) => [h.tanggal, normalisasiLibur(h)]),
-        ),
+        new Map(props.hariLiburs.map((h) => [h.tanggal, normalisasiLibur(h)])),
 );
 
 const isHariLibur = (dateStr) => hariLiburSet.value.has(dateStr);
@@ -609,8 +636,7 @@ const tahunSaldoKurang = computed(() => {
 
     for (const [tahun, hari] of Object.entries(hariPerTahun.value)) {
         if (hari <= 0) continue;
-        const tersedia =
-            props.saldo_per_tahun?.[tahun] ?? saldoSaatIni.value;
+        const tersedia = props.saldo_per_tahun?.[tahun] ?? saldoSaatIni.value;
         if (hari > tersedia) {
             return { tahun: Number(tahun), hari, tersedia };
         }
@@ -623,8 +649,7 @@ const tahunSaldoKurang = computed(() => {
 // rentang cuti. Jenis cuti selain Cuti Tahunan tidak memotong (potong = 0).
 const rincianPerTahun = computed(() =>
     Object.entries(hariPerTahun.value).map(([tahun, hari]) => {
-        const tersedia =
-            props.saldo_per_tahun?.[tahun] ?? saldoSaatIni.value;
+        const tersedia = props.saldo_per_tahun?.[tahun] ?? saldoSaatIni.value;
         const potong = form.jenis_cuti === "Cuti Tahunan" ? hari : 0;
         return {
             tahun: Number(tahun),
@@ -637,8 +662,7 @@ const rincianPerTahun = computed(() =>
 
 const lintasTahun = computed(
     () =>
-        form.jenis_cuti === "Cuti Tahunan" &&
-        rincianPerTahun.value.length > 1,
+        form.jenis_cuti === "Cuti Tahunan" && rincianPerTahun.value.length > 1,
 );
 
 const sisaSetelahPengajuan = computed(() => {
@@ -757,7 +781,11 @@ const tombolNonaktif = computed(
         estimasiHari.value === 0 ||
         tahunTanpaSaldo.value !== null ||
         pengajuanBentrok.value !== null ||
-        (form.jenis_cuti === "Cuti Tahunan" && sisaSetelahPengajuan.value < 0) ||
+        (form.jenis_cuti === "Cuti Tahunan" &&
+            sisaSetelahPengajuan.value < 0) ||
+        (form.jenis_cuti === "Cuti Alasan Penting" &&
+            !canChooseAlasanPenting.value) ||
+        (form.jenis_cuti === "Cuti Melahirkan" && !canChooseMelahirkan.value) ||
         (form.jenis_cuti === "Cuti Besar" && !canChooseCutiBesar.value),
 );
 // ================= END RINGKASAN TANGGAL =================
@@ -1059,7 +1087,7 @@ const bukaSheetKetentuan = () => {
 };
 
 const daftarKetentuan = [
-        "Lupa mengajukan? Cuti yang sudah terlanjur diambil (kemarin, minggu lalu, dan seterusnya) masih bisa diajukan sekarang.",
+    "Lupa mengajukan? Cuti yang sudah terlanjur diambil (kemarin, minggu lalu, dan seterusnya) masih bisa diajukan sekarang.",
     "Yang dihitung sebagai hari cuti hanya hari kerja. Sabtu, Minggu, dan hari libur tidak dihitung.",
     "Sisa cuti tahun lalu bisa dipakai di tahun ini, maksimal 6 hari. Kalau cuti 2 tahun terakhir sama sekali tidak dipakai, maksimal 12 hari.",
     "Kalau cuti Anda melewati tahun baru (misalnya akhir Desember sampai awal Januari), hari cutinya dihitung terpisah per tahun. Cuti di tahun baru baru bisa diajukan setelah Admin SDM menyiapkan jatah cuti tahun itu.",
@@ -1113,6 +1141,29 @@ const submit = () => {
             icon: "error",
             title: "Belum memenuhi syarat",
             text: `Cuti Besar hanya dapat diajukan jika masa kerja sudah mencapai 5 tahun. Masa kerja Anda saat ini terhitung ${masaKerjaTahun.value} tahun.`,
+            confirmButtonColor: "#ef4444",
+        });
+        return;
+    }
+
+    if (
+        form.jenis_cuti === "Cuti Alasan Penting" &&
+        !canChooseAlasanPenting.value
+    ) {
+        Swal.fire({
+            icon: "error",
+            title: "Belum memenuhi syarat",
+            text: "Cuti Alasan Penting hanya dapat diajukan oleh pegawai berstatus PNS.",
+            confirmButtonColor: "#ef4444",
+        });
+        return;
+    }
+
+    if (form.jenis_cuti === "Cuti Melahirkan" && !canChooseMelahirkan.value) {
+        Swal.fire({
+            icon: "error",
+            title: "Belum memenuhi syarat",
+            text: "Cuti Melahirkan hanya dapat diajukan oleh pegawai perempuan.",
             confirmButtonColor: "#ef4444",
         });
         return;
@@ -1236,7 +1287,9 @@ const submit = () => {
              halaman di-scroll sampai bawah. Di md ke atas kembali pb-6. -->
         <div class="w-full min-w-0 max-w-xl lg:max-w-5xl mx-auto pb-28 md:pb-6">
             <div class="mb-3">
-                <h1 class="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight">
+                <h1
+                    class="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight"
+                >
                     Ajukan Cuti
                 </h1>
                 <p class="hidden sm:block text-slate-500 mt-1 text-sm">
@@ -1244,37 +1297,72 @@ const submit = () => {
                 </p>
             </div>
 
-            <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-5 lg:items-start">
+            <div
+                class="lg:grid lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-5 lg:items-start"
+            >
                 <!-- Kartu utama. Tanpa overflow-hidden agar bar tombol bisa "sticky". -->
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 min-w-0">
+                <div
+                    class="bg-white rounded-2xl shadow-sm border border-slate-200 min-w-0"
+                >
                     <div class="p-4 sm:p-5 space-y-4">
                         <!-- Error saldo (dari server) -->
                         <div
-                            v-if="form.errors.tanggal_mulai && form.errors.tanggal_mulai.includes('Saldo')"
+                            v-if="
+                                form.errors.tanggal_mulai &&
+                                form.errors.tanggal_mulai.includes('Saldo')
+                            "
                             class="p-3 bg-red-50 text-red-700 rounded-xl border border-red-200 flex items-start gap-2.5"
                         >
-                            <svg class="w-4 h-4 text-red-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                            <svg
+                                class="w-4 h-4 text-red-500 mt-0.5 shrink-0"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                                ></path>
                             </svg>
-                            <span class="text-xs font-semibold break-words">{{ form.errors.tanggal_mulai }}</span>
+                            <span class="text-xs font-semibold break-words">{{
+                                form.errors.tanggal_mulai
+                            }}</span>
                         </div>
 
-                        <!-- Error jenis cuti (masa kerja Cuti Besar / saldo tahun belum ada / saldo per tahun kurang) -->
+                        <!-- Error jenis cuti (masa kerja Cuti Besar / saldo tahun belum ada / saldo per tahun kurang / bukan PNS) -->
                         <div
                             v-if="form.errors.jenis_cuti"
                             class="p-3 bg-red-50 text-red-700 rounded-xl border border-red-200 flex items-start gap-2.5"
                         >
-                            <svg class="w-4 h-4 text-red-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                            <svg
+                                class="w-4 h-4 text-red-500 mt-0.5 shrink-0"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                                ></path>
                             </svg>
-                            <span class="text-xs font-semibold break-words">{{ form.errors.jenis_cuti }}</span>
+                            <span class="text-xs font-semibold break-words">{{
+                                form.errors.jenis_cuti
+                            }}</span>
                         </div>
 
                         <form @submit.prevent="submit" class="space-y-4">
                             <!-- 1. Jenis Cuti (DROPDOWN KUSTOM) -->
                             <div>
-                                <label for="jenis-cuti" class="block text-sm font-semibold text-slate-700 mb-1.5">
-                                    Jenis Cuti <span class="text-red-500">*</span>
+                                <label
+                                    for="jenis-cuti"
+                                    class="block text-sm font-semibold text-slate-700 mb-1.5"
+                                >
+                                    Jenis Cuti
+                                    <span class="text-red-500">*</span>
                                 </label>
 
                                 <div
@@ -1282,9 +1370,21 @@ const submit = () => {
                                     class="relative w-full"
                                     @keydown.esc="dropdownJenisTerbuka = false"
                                 >
-                                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    <div
+                                        class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+                                    >
+                                        <svg
+                                            class="w-4 h-4 text-gray-400"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 24 24"
+                                        >
+                                            <path
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                stroke-width="2"
+                                                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                            />
                                         </svg>
                                     </div>
 
@@ -1297,20 +1397,36 @@ const submit = () => {
                                         :title="jenisCutiTerpilihLabel"
                                         @click="toggleDropdownJenis"
                                         class="w-full min-h-[44px] text-left text-sm border bg-white cursor-pointer rounded-lg shadow-sm text-gray-700 py-2 pl-9 pr-8 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                                        :class="form.errors.jenis_cuti ? 'border-red-400' : 'border-gray-300'"
+                                        :class="
+                                            form.errors.jenis_cuti
+                                                ? 'border-red-400'
+                                                : 'border-gray-300'
+                                        "
                                     >
-                                        <span class="block truncate">{{ jenisCutiTerpilihLabel }}</span>
+                                        <span class="block truncate">{{
+                                            jenisCutiTerpilihLabel
+                                        }}</span>
                                     </button>
 
-                                    <span class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                                    <span
+                                        class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
+                                    >
                                         <svg
                                             class="w-3.5 h-3.5 text-gray-500 transition-transform"
-                                            :class="{ 'rotate-180': dropdownJenisTerbuka }"
+                                            :class="{
+                                                'rotate-180':
+                                                    dropdownJenisTerbuka,
+                                            }"
                                             fill="none"
                                             stroke="currentColor"
                                             viewBox="0 0 24 24"
                                         >
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                            <path
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                stroke-width="2"
+                                                d="M19 9l-7 7-7-7"
+                                            ></path>
                                         </svg>
                                     </span>
 
@@ -1319,19 +1435,26 @@ const submit = () => {
                                         role="listbox"
                                         class="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
                                     >
-                                        <li v-for="opt in opsiJenisCuti" :key="opt.value">
+                                        <li
+                                            v-for="opt in opsiJenisCuti"
+                                            :key="opt.value"
+                                        >
                                             <button
                                                 type="button"
                                                 role="option"
                                                 :title="opt.label"
-                                                :aria-selected="form.jenis_cuti === opt.value"
+                                                :aria-selected="
+                                                    form.jenis_cuti ===
+                                                    opt.value
+                                                "
                                                 :aria-disabled="opt.disabled"
                                                 :disabled="opt.disabled"
                                                 @click="pilihJenisCuti(opt)"
                                                 :class="
                                                     opt.disabled
                                                         ? 'text-gray-400 bg-gray-50 cursor-not-allowed'
-                                                        : form.jenis_cuti === opt.value
+                                                        : form.jenis_cuti ===
+                                                            opt.value
                                                           ? 'bg-emerald-50 text-emerald-700 font-semibold cursor-pointer'
                                                           : 'text-gray-700 hover:bg-gray-50 cursor-pointer'
                                                 "
@@ -1342,20 +1465,19 @@ const submit = () => {
                                         </li>
                                     </ul>
                                 </div>
-
-                                <span v-if="form.errors.jenis_cuti" class="text-xs text-red-500 mt-1 block">
-                                    {{ form.errors.jenis_cuti }}
-                                </span>
-                                <span v-else-if="!canChooseCutiBesar" class="text-[11px] text-slate-400 mt-1 block">
-                                    Opsi "Cuti Besar" terkunci karena masa kerja Anda baru
-                                    {{ masaKerjaTahun }} tahun (syarat minimal 5 tahun).
-                                </span>
                             </div>
 
                             <!-- Anak ke- (hanya Cuti Melahirkan) -->
-                            <div v-if="form.jenis_cuti === 'Cuti Melahirkan'" class="animate-in fade-in duration-300">
-                                <label for="anak-ke" class="block text-sm font-semibold text-slate-700 mb-1.5">
-                                    Anak ke-berapa <span class="text-red-500">*</span>
+                            <div
+                                v-if="form.jenis_cuti === 'Cuti Melahirkan'"
+                                class="animate-in fade-in duration-300"
+                            >
+                                <label
+                                    for="anak-ke"
+                                    class="block text-sm font-semibold text-slate-700 mb-1.5"
+                                >
+                                    Anak ke-berapa
+                                    <span class="text-red-500">*</span>
                                 </label>
                                 <input
                                     id="anak-ke"
@@ -1371,7 +1493,9 @@ const submit = () => {
                                             ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
                                             : 'border-slate-300 focus:ring-emerald-500 focus:border-emerald-500'
                                     "
-                                    :aria-invalid="!!(anakKeError || form.errors.anak_ke)"
+                                    :aria-invalid="
+                                        !!(anakKeError || form.errors.anak_ke)
+                                    "
                                     aria-describedby="anak-ke-error"
                                 />
                                 <span
@@ -1386,8 +1510,12 @@ const submit = () => {
 
                             <!-- 2. Tanggal Cuti (satu kolom, membuka panel kalender) -->
                             <div>
-                                <label for="tanggal-cuti" class="block text-sm font-semibold text-slate-700 mb-1.5">
-                                    Tanggal Cuti <span class="text-red-500">*</span>
+                                <label
+                                    for="tanggal-cuti"
+                                    class="block text-sm font-semibold text-slate-700 mb-1.5"
+                                >
+                                    Tanggal Cuti
+                                    <span class="text-red-500">*</span>
                                 </label>
                                 <button
                                     id="tanggal-cuti"
@@ -1396,36 +1524,73 @@ const submit = () => {
                                     @click="bukaSheetTanggal"
                                     class="w-full min-h-[44px] flex items-center gap-2 text-left text-sm border bg-white rounded-lg shadow-sm py-2 px-3 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none cursor-pointer"
                                     :class="
-                                        form.errors.tanggal_mulai || form.errors.tanggal_selesai
+                                        form.errors.tanggal_mulai ||
+                                        form.errors.tanggal_selesai
                                             ? 'border-red-400'
                                             : 'border-gray-300'
                                     "
                                 >
-                                    <svg class="w-4 h-4 text-emerald-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                    <svg
+                                        class="w-4 h-4 text-emerald-600 shrink-0"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                        ></path>
                                     </svg>
                                     <span
                                         class="flex-1 min-w-0 truncate"
-                                        :class="form.tanggal_mulai ? 'font-semibold text-slate-800' : 'text-slate-400'"
+                                        :class="
+                                            form.tanggal_mulai
+                                                ? 'font-semibold text-slate-800'
+                                                : 'text-slate-400'
+                                        "
                                     >
                                         {{ labelTanggal }}
                                     </span>
-                                    <svg class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                                    <svg
+                                        class="w-3.5 h-3.5 text-gray-400 shrink-0"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M9 5l7 7-7 7"
+                                        ></path>
                                     </svg>
                                 </button>
 
                                 <p class="text-[11px] text-slate-400 mt-1">
-                                    Satu pengajuan maksimal 3 bulan ({{ MAKS_RENTANG_HARI }} hari, termasuk akhir pekan). Butuh lebih lama? Ajukan lagi terpisah.
+                                    Satu pengajuan maksimal 3 bulan ({{
+                                        MAKS_RENTANG_HARI
+                                    }}
+                                    hari, termasuk akhir pekan). Butuh lebih
+                                    lama? Ajukan lagi terpisah.
                                 </p>
 
                                 <span
-                                    v-if="form.errors.tanggal_mulai && !form.errors.tanggal_mulai.includes('Saldo')"
+                                    v-if="
+                                        form.errors.tanggal_mulai &&
+                                        !form.errors.tanggal_mulai.includes(
+                                            'Saldo',
+                                        )
+                                    "
                                     class="text-xs text-red-500 mt-1 block"
                                 >
                                     {{ form.errors.tanggal_mulai }}
                                 </span>
-                                <span v-if="form.errors.tanggal_selesai" class="text-xs text-red-500 mt-1 block">
+                                <span
+                                    v-if="form.errors.tanggal_selesai"
+                                    class="text-xs text-red-500 mt-1 block"
+                                >
                                     {{ form.errors.tanggal_selesai }}
                                 </span>
 
@@ -1433,7 +1598,8 @@ const submit = () => {
                                 <p
                                     class="text-[11px] mt-1.5 font-medium"
                                     :class="
-                                        form.jenis_cuti === 'Cuti Tahunan' && sisaSetelahPengajuan < 0
+                                        form.jenis_cuti === 'Cuti Tahunan' &&
+                                        sisaSetelahPengajuan < 0
                                             ? 'text-red-600'
                                             : 'text-slate-500'
                                     "
@@ -1441,16 +1607,23 @@ const submit = () => {
                                     {{ ringkasSaldo }}
                                 </p>
                                 <p
-                                    v-if="form.jenis_cuti === 'Cuti Tahunan' && sisaSetelahPengajuan < 0"
+                                    v-if="
+                                        form.jenis_cuti === 'Cuti Tahunan' &&
+                                        sisaSetelahPengajuan < 0
+                                    "
                                     class="text-[11px] mt-0.5 font-bold text-red-600"
                                 >
                                     <template v-if="tahunSaldoKurang">
-                                        Saldo cuti tahun {{ tahunSaldoKurang.tahun }} tidak cukup:
-                                        butuh {{ tahunSaldoKurang.hari }} hari kerja, tersedia
+                                        Saldo cuti tahun
+                                        {{ tahunSaldoKurang.tahun }} tidak
+                                        cukup: butuh
+                                        {{ tahunSaldoKurang.hari }} hari kerja,
+                                        tersedia
                                         {{ tahunSaldoKurang.tersedia }} hari.
                                     </template>
                                     <template v-else>
-                                        Saldo cuti tidak mencukupi untuk tanggal yang dipilih.
+                                        Saldo cuti tidak mencukupi untuk tanggal
+                                        yang dipilih.
                                     </template>
                                 </p>
 
@@ -1460,19 +1633,49 @@ const submit = () => {
                                         v-if="hariLiburDalamRentang.length > 0"
                                         class="text-[11px] text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 leading-relaxed break-words"
                                     >
-                                        <span class="font-semibold">{{ hariLiburDalamRentang.length }} tanggal tidak dihitung</span>
+                                        <span class="font-semibold"
+                                            >{{
+                                                hariLiburDalamRentang.length
+                                            }}
+                                            tanggal tidak dihitung</span
+                                        >
                                         karena libur:
-                                        <span v-for="(libur, idx) in hariLiburDalamRentang" :key="libur.tanggal">
-                                            <span class="font-semibold">{{ libur.judul }}</span>
-                                            ({{ formatTanggalPendek(libur.tanggal) }})<span v-if="idx < hariLiburDalamRentang.length - 1">, </span>
+                                        <span
+                                            v-for="(
+                                                libur, idx
+                                            ) in hariLiburDalamRentang"
+                                            :key="libur.tanggal"
+                                        >
+                                            <span class="font-semibold">{{
+                                                libur.judul
+                                            }}</span>
+                                            ({{
+                                                formatTanggalPendek(
+                                                    libur.tanggal,
+                                                )
+                                            }})<span
+                                                v-if="
+                                                    idx <
+                                                    hariLiburDalamRentang.length -
+                                                        1
+                                                "
+                                                >,
+                                            </span>
                                         </span>
                                     </p>
 
                                     <p
-                                        v-if="estimasiHari === 0 && form.tanggal_mulai && form.tanggal_selesai"
+                                        v-if="
+                                            estimasiHari === 0 &&
+                                            form.tanggal_mulai &&
+                                            form.tanggal_selesai
+                                        "
                                         class="text-[11px] font-bold text-red-500"
                                     >
-                                        *Tanggal yang dipilih tidak valid karena hanya mencakup akhir pekan (Sabtu/Minggu) dan/atau hari libur nasional/cuti bersama.
+                                        *Tanggal yang dipilih tidak valid karena
+                                        hanya mencakup akhir pekan
+                                        (Sabtu/Minggu) dan/atau hari libur
+                                        nasional/cuti bersama.
                                     </p>
 
                                     <!-- Saldo tahun belum dibuat Admin SDM (khusus Cuti Tahunan) -->
@@ -1480,14 +1683,33 @@ const submit = () => {
                                         v-if="tahunTanpaSaldo !== null"
                                         class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
                                     >
-                                        <svg class="w-4 h-4 text-red-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                        <svg
+                                            class="w-4 h-4 text-red-500 mt-0.5 shrink-0"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 24 24"
+                                        >
+                                            <path
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                stroke-width="2"
+                                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                                            ></path>
                                         </svg>
-                                        <p class="min-w-0 text-[11px] text-red-700 leading-relaxed break-words">
-                                            <span class="font-semibold">Saldo cuti tahun {{ tahunTanpaSaldo }} belum tersedia.</span>
-                                            Cuti Tahunan untuk tahun tersebut baru bisa diajukan setelah Admin SDM membuat saldonya.
-                                            Pilih tanggal di tahun yang saldonya sudah ada, atau pilih jenis cuti lain
-                                            yang tidak memotong saldo.
+                                        <p
+                                            class="min-w-0 text-[11px] text-red-700 leading-relaxed break-words"
+                                        >
+                                            <span class="font-semibold"
+                                                >Saldo cuti tahun
+                                                {{ tahunTanpaSaldo }} belum
+                                                tersedia.</span
+                                            >
+                                            Cuti Tahunan untuk tahun tersebut
+                                            baru bisa diajukan setelah Admin SDM
+                                            membuat saldonya. Pilih tanggal di
+                                            tahun yang saldonya sudah ada, atau
+                                            pilih jenis cuti lain yang tidak
+                                            memotong saldo.
                                         </p>
                                     </div>
 
@@ -1496,15 +1718,49 @@ const submit = () => {
                                         v-if="pengajuanBentrok"
                                         class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
                                     >
-                                        <svg class="w-4 h-4 text-red-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                        <svg
+                                            class="w-4 h-4 text-red-500 mt-0.5 shrink-0"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 24 24"
+                                        >
+                                            <path
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                stroke-width="2"
+                                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                                            ></path>
                                         </svg>
-                                        <p class="min-w-0 text-[11px] text-red-700 leading-relaxed break-words">
-                                            <span class="font-semibold">Tanggal bentrok dengan pengajuan lain.</span>
-                                            Anda sudah punya {{ pengajuanBentrok.jenis_cuti }}
-                                            ({{ formatTanggalPendek(pengajuanBentrok.tanggal_mulai) }} - {{ formatTanggalPendek(pengajuanBentrok.tanggal_selesai) }})
-                                            yang {{ pengajuanBentrok.status === 'disetujui' ? 'sudah disetujui' : 'masih menunggu persetujuan' }}.
-                                            Batalkan pengajuan tersebut terlebih dahulu atau pilih tanggal lain.
+                                        <p
+                                            class="min-w-0 text-[11px] text-red-700 leading-relaxed break-words"
+                                        >
+                                            <span class="font-semibold"
+                                                >Tanggal bentrok dengan
+                                                pengajuan lain.</span
+                                            >
+                                            Anda sudah punya
+                                            {{
+                                                pengajuanBentrok.jenis_cuti
+                                            }}
+                                            ({{
+                                                formatTanggalPendek(
+                                                    pengajuanBentrok.tanggal_mulai,
+                                                )
+                                            }}
+                                            -
+                                            {{
+                                                formatTanggalPendek(
+                                                    pengajuanBentrok.tanggal_selesai,
+                                                )
+                                            }}) yang
+                                            {{
+                                                pengajuanBentrok.status ===
+                                                "disetujui"
+                                                    ? "sudah disetujui"
+                                                    : "masih menunggu persetujuan"
+                                            }}. Batalkan pengajuan tersebut
+                                            terlebih dahulu atau pilih tanggal
+                                            lain.
                                         </p>
                                     </div>
                                 </div>
@@ -1512,8 +1768,12 @@ const submit = () => {
 
                             <!-- 3. Alasan Cuti -->
                             <div>
-                                <label for="keterangan" class="block text-sm font-semibold text-slate-700 mb-1.5">
-                                    Alasan Cuti <span class="text-red-500">*</span>
+                                <label
+                                    for="keterangan"
+                                    class="block text-sm font-semibold text-slate-700 mb-1.5"
+                                >
+                                    Alasan Cuti
+                                    <span class="text-red-500">*</span>
                                 </label>
                                 <textarea
                                     id="keterangan"
@@ -1528,7 +1788,11 @@ const submit = () => {
                                             : 'border-slate-300 focus:ring-emerald-500 focus:border-emerald-500'
                                     "
                                 ></textarea>
-                                <span v-if="form.errors.keterangan" class="text-xs text-red-500 mt-1 block" role="alert">
+                                <span
+                                    v-if="form.errors.keterangan"
+                                    class="text-xs text-red-500 mt-1 block"
+                                    role="alert"
+                                >
                                     {{ form.errors.keterangan }}
                                 </span>
                             </div>
@@ -1537,43 +1801,90 @@ const submit = () => {
                             <div
                                 class="rounded-xl border px-3 py-2.5"
                                 :class="
-                                    form.errors.alamat_cuti || form.errors.no_telp
+                                    form.errors.alamat_cuti ||
+                                    form.errors.no_telp
                                         ? 'bg-red-50/40 border-red-300'
                                         : 'bg-slate-50 border-slate-200'
                                 "
                             >
                                 <div class="flex items-center gap-2">
-                                    <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                    <svg
+                                        class="w-4 h-4 text-slate-400 shrink-0"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
+                                        ></path>
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
+                                        ></path>
                                     </svg>
-                                    <p class="min-w-0 flex-1 truncate text-xs text-slate-600" :title="ringkasKontak">
-                                        <span class="font-semibold text-slate-700">Alamat &amp; HP:</span>
+                                    <p
+                                        class="min-w-0 flex-1 truncate text-xs text-slate-600"
+                                        :title="ringkasKontak"
+                                    >
+                                        <span
+                                            class="font-semibold text-slate-700"
+                                            >Alamat &amp; HP:</span
+                                        >
                                         {{ ringkasKontak }}
                                     </p>
                                     <button
                                         type="button"
-                                        @click="editorKontakTerbuka = !editorKontakTerbuka"
+                                        @click="
+                                            editorKontakTerbuka =
+                                                !editorKontakTerbuka
+                                        "
                                         :aria-expanded="editorKontakTerbuka"
                                         class="shrink-0 min-h-[36px] px-2 text-xs font-bold text-emerald-700 hover:text-emerald-800"
                                     >
-                                        {{ editorKontakTerbuka ? "Tutup" : "Ubah" }}
+                                        {{
+                                            editorKontakTerbuka
+                                                ? "Tutup"
+                                                : "Ubah"
+                                        }}
                                     </button>
                                 </div>
 
-                                <div v-show="editorKontakTerbuka" class="mt-3 pt-3 border-t border-slate-200 space-y-3">
+                                <div
+                                    v-show="editorKontakTerbuka"
+                                    class="mt-3 pt-3 border-t border-slate-200 space-y-3"
+                                >
                                     <div>
-                                        <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-1.5">
-                                            <label for="alamat-cuti" class="block text-xs font-semibold text-slate-700">
-                                                Alamat Selama Cuti <span class="text-red-500">*</span>
+                                        <div
+                                            class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-1.5"
+                                        >
+                                            <label
+                                                for="alamat-cuti"
+                                                class="block text-xs font-semibold text-slate-700"
+                                            >
+                                                Alamat Selama Cuti
+                                                <span class="text-red-500"
+                                                    >*</span
+                                                >
                                             </label>
-                                            <label for="gunakan-alamat-domisili" class="flex min-h-[32px] items-center gap-2 text-[11px] font-medium text-slate-600 cursor-pointer">
+                                            <label
+                                                for="gunakan-alamat-domisili"
+                                                class="flex min-h-[32px] items-center gap-2 text-[11px] font-medium text-slate-600 cursor-pointer"
+                                            >
                                                 <input
                                                     id="gunakan-alamat-domisili"
                                                     name="gunakan_alamat_domisili"
                                                     type="checkbox"
-                                                    v-model="gunakanAlamatDomisili"
-                                                    @change="toggleAlamatDomisili"
+                                                    v-model="
+                                                        gunakanAlamatDomisili
+                                                    "
+                                                    @change="
+                                                        toggleAlamatDomisili
+                                                    "
                                                     class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                                                 />
                                                 Sesuai alamat domisili di profil
@@ -1588,23 +1899,42 @@ const submit = () => {
                                             placeholder="Contoh: Jl. Merdeka No. 10..."
                                             class="w-full min-h-[56px] text-base sm:text-sm border-slate-300 rounded-lg focus:ring-emerald-500 focus:border-emerald-500 py-2 px-3 resize-y disabled:bg-slate-100 disabled:text-slate-500"
                                         ></textarea>
-                                        <span v-if="form.errors.alamat_cuti" class="text-xs text-red-500 mt-1 block" role="alert">
+                                        <span
+                                            v-if="form.errors.alamat_cuti"
+                                            class="text-xs text-red-500 mt-1 block"
+                                            role="alert"
+                                        >
                                             {{ form.errors.alamat_cuti }}
                                         </span>
                                     </div>
 
                                     <div>
-                                        <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-1.5">
-                                            <label for="no-telp" class="block text-xs font-semibold text-slate-700">
-                                                No. Telepon / HP <span class="text-red-500">*</span>
+                                        <div
+                                            class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-1.5"
+                                        >
+                                            <label
+                                                for="no-telp"
+                                                class="block text-xs font-semibold text-slate-700"
+                                            >
+                                                No. Telepon / HP
+                                                <span class="text-red-500"
+                                                    >*</span
+                                                >
                                             </label>
-                                            <label for="gunakan-nomor-telepon-profil" class="flex min-h-[32px] items-center gap-2 text-[11px] font-medium text-slate-600 cursor-pointer">
+                                            <label
+                                                for="gunakan-nomor-telepon-profil"
+                                                class="flex min-h-[32px] items-center gap-2 text-[11px] font-medium text-slate-600 cursor-pointer"
+                                            >
                                                 <input
                                                     id="gunakan-nomor-telepon-profil"
                                                     name="gunakan_nomor_telepon_profil"
                                                     type="checkbox"
-                                                    v-model="gunakanNomorTeleponProfil"
-                                                    @change="toggleNomorTeleponProfil"
+                                                    v-model="
+                                                        gunakanNomorTeleponProfil
+                                                    "
+                                                    @change="
+                                                        toggleNomorTeleponProfil
+                                                    "
                                                     class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                                                 />
                                                 Sesuai nomor telepon di profil
@@ -1615,11 +1945,17 @@ const submit = () => {
                                             name="no_telp"
                                             v-model="form.no_telp"
                                             type="tel"
-                                            :disabled="gunakanNomorTeleponProfil"
+                                            :disabled="
+                                                gunakanNomorTeleponProfil
+                                            "
                                             placeholder="Contoh: 081234567890"
                                             class="w-full min-h-[44px] text-base sm:text-sm border-slate-300 rounded-lg focus:ring-emerald-500 focus:border-emerald-500 py-2 px-3 disabled:bg-slate-100 disabled:text-slate-500"
                                         />
-                                        <span v-if="form.errors.no_telp" class="text-xs text-red-500 mt-1 block" role="alert">
+                                        <span
+                                            v-if="form.errors.no_telp"
+                                            class="text-xs text-red-500 mt-1 block"
+                                            role="alert"
+                                        >
                                             {{ form.errors.no_telp }}
                                         </span>
                                     </div>
@@ -1628,9 +1964,15 @@ const submit = () => {
 
                             <!-- 5. Lampiran (opsional) — tampil sebagai kolom input -->
                             <div>
-                                <label for="lampiran-pilih" class="block text-sm font-semibold text-slate-700 mb-1.5">
+                                <label
+                                    for="lampiran-pilih"
+                                    class="block text-sm font-semibold text-slate-700 mb-1.5"
+                                >
                                     Lampiran Dokumen
-                                    <span class="text-xs font-normal text-slate-400">(opsional)</span>
+                                    <span
+                                        class="text-xs font-normal text-slate-400"
+                                        >(opsional)</span
+                                    >
                                 </label>
 
                                 <input
@@ -1651,8 +1993,18 @@ const submit = () => {
                                             : 'border-gray-300'
                                     "
                                 >
-                                    <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path>
+                                    <svg
+                                        class="w-4 h-4 text-slate-400 shrink-0"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                        ></path>
                                     </svg>
 
                                     <!-- Belum ada file: seluruh kolom bisa diklik -->
@@ -1676,12 +2028,23 @@ const submit = () => {
 
                                     <!-- File sudah dipilih: nama + ukuran di dalam kolom -->
                                     <template v-else>
-                                        <div class="min-w-0 flex-1 leading-tight">
-                                            <p class="truncate text-sm font-semibold text-slate-700" :title="form.lampiran.name">
+                                        <div
+                                            class="min-w-0 flex-1 leading-tight"
+                                        >
+                                            <p
+                                                class="truncate text-sm font-semibold text-slate-700"
+                                                :title="form.lampiran.name"
+                                            >
                                                 {{ form.lampiran.name }}
                                             </p>
-                                            <p class="text-[11px] text-slate-400">
-                                                {{ formatUkuranLampiran(form.lampiran.size) }}
+                                            <p
+                                                class="text-[11px] text-slate-400"
+                                            >
+                                                {{
+                                                    formatUkuranLampiran(
+                                                        form.lampiran.size,
+                                                    )
+                                                }}
                                             </p>
                                         </div>
                                         <button
@@ -1702,7 +2065,9 @@ const submit = () => {
                                     </template>
                                 </div>
 
-                                <p class="text-[11px] text-slate-400 mt-1">PDF, JPG, atau PNG · maksimal 2 MB</p>
+                                <p class="text-[11px] text-slate-400 mt-1">
+                                    PDF, JPG, atau PNG · maksimal 2 MB
+                                </p>
                                 <span
                                     v-if="lampiranError || form.errors.lampiran"
                                     class="text-xs text-red-500 mt-1 block"
@@ -1726,10 +2091,16 @@ const submit = () => {
                             :disabled="tombolNonaktif"
                             class="w-full min-h-[46px] px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md shadow-emerald-600/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            {{ form.processing ? "Mengirim..." : labelTombolAjukan }}
+                            {{
+                                form.processing
+                                    ? "Mengirim..."
+                                    : labelTombolAjukan
+                            }}
                         </button>
 
-                        <div class="mt-2 flex items-center justify-between gap-3">
+                        <div
+                            class="mt-2 flex items-center justify-between gap-3"
+                        >
                             <button
                                 type="button"
                                 @click="resetSemuaForm"
@@ -1753,12 +2124,26 @@ const submit = () => {
                 <!-- ================= KOLOM SAMPING (DESKTOP SAJA) ================= -->
                 <aside class="hidden lg:block space-y-4 min-w-0">
                     <!-- Ringkasan Saldo -->
-                    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+                    <section
+                        class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4"
+                    >
                         <div class="flex items-center gap-2 mb-3">
-                            <svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                            <svg
+                                class="w-4 h-4 text-emerald-600"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                                ></path>
                             </svg>
-                            <h2 class="text-sm font-bold text-slate-800">Ringkasan Saldo</h2>
+                            <h2 class="text-sm font-bold text-slate-800">
+                                Ringkasan Saldo
+                            </h2>
                         </div>
 
                         <!-- [BARU] Cuti Tahunan lintas tahun: satu kartu per tahun,
@@ -1774,27 +2159,54 @@ const submit = () => {
                                         : 'border-slate-200 bg-slate-50'
                                 "
                             >
-                                <p class="text-xs font-extrabold text-slate-700 mb-1.5">
+                                <p
+                                    class="text-xs font-extrabold text-slate-700 mb-1.5"
+                                >
                                     Saldo {{ r.tahun }}
                                 </p>
                                 <dl class="space-y-1 text-sm">
-                                    <div class="flex items-center justify-between gap-3">
-                                        <dt class="text-slate-500">Sisa saat ini</dt>
-                                        <dd class="font-bold text-slate-800">{{ r.tersedia }} hari</dd>
+                                    <div
+                                        class="flex items-center justify-between gap-3"
+                                    >
+                                        <dt class="text-slate-500">
+                                            Sisa saat ini
+                                        </dt>
+                                        <dd class="font-bold text-slate-800">
+                                            {{ r.tersedia }} hari
+                                        </dd>
                                     </div>
-                                    <div class="flex items-center justify-between gap-3">
-                                        <dt class="text-slate-500">Pengajuan ini</dt>
-                                        <dd class="font-bold" :class="r.potong > 0 ? 'text-red-500' : 'text-slate-800'">
+                                    <div
+                                        class="flex items-center justify-between gap-3"
+                                    >
+                                        <dt class="text-slate-500">
+                                            Pengajuan ini
+                                        </dt>
+                                        <dd
+                                            class="font-bold"
+                                            :class="
+                                                r.potong > 0
+                                                    ? 'text-red-500'
+                                                    : 'text-slate-800'
+                                            "
+                                        >
                                             {{ r.potong }} hari
                                         </dd>
                                     </div>
                                     <div
                                         class="flex items-center justify-between gap-3 border-t border-slate-200 pt-1"
                                     >
-                                        <dt class="font-semibold text-slate-600">Sisa setelah</dt>
+                                        <dt
+                                            class="font-semibold text-slate-600"
+                                        >
+                                            Sisa setelah
+                                        </dt>
                                         <dd
                                             class="font-extrabold"
-                                            :class="r.setelah < 0 ? 'text-red-600' : 'text-emerald-700'"
+                                            :class="
+                                                r.setelah < 0
+                                                    ? 'text-red-600'
+                                                    : 'text-emerald-700'
+                                            "
                                         >
                                             {{ r.setelah }} hari
                                         </dd>
@@ -1805,13 +2217,28 @@ const submit = () => {
 
                         <!-- Cuti satu tahun / jenis cuti lain: tampilan ringkas seperti semula -->
                         <dl v-else class="space-y-2 text-sm">
-                            <div class="flex items-center justify-between gap-3">
-                                <dt class="text-slate-500">Sisa saldo saat ini</dt>
-                                <dd class="font-bold text-slate-800">{{ saldoSaatIni }} hari</dd>
+                            <div
+                                class="flex items-center justify-between gap-3"
+                            >
+                                <dt class="text-slate-500">
+                                    Sisa saldo saat ini
+                                </dt>
+                                <dd class="font-bold text-slate-800">
+                                    {{ saldoSaatIni }} hari
+                                </dd>
                             </div>
-                            <div class="flex items-center justify-between gap-3">
+                            <div
+                                class="flex items-center justify-between gap-3"
+                            >
                                 <dt class="text-slate-500">Pengajuan ini</dt>
-                                <dd class="font-bold" :class="hariDipotong > 0 ? 'text-red-500' : 'text-slate-800'">
+                                <dd
+                                    class="font-bold"
+                                    :class="
+                                        hariDipotong > 0
+                                            ? 'text-red-500'
+                                            : 'text-slate-800'
+                                    "
+                                >
                                     {{ hariDipotong }} hari
                                 </dd>
                             </div>
@@ -1839,10 +2266,18 @@ const submit = () => {
                     </section>
 
                     <!-- Alur Persetujuan -->
-                    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
-                        <div class="flex items-center justify-between gap-2 mb-3">
-                            <h2 class="text-sm font-bold text-slate-800">Alur Persetujuan</h2>
-                            <span class="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 text-[10px] font-bold text-right">
+                    <section
+                        class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4"
+                    >
+                        <div
+                            class="flex items-center justify-between gap-2 mb-3"
+                        >
+                            <h2 class="text-sm font-bold text-slate-800">
+                                Alur Persetujuan
+                            </h2>
+                            <span
+                                class="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 text-[10px] font-bold text-right"
+                            >
                                 {{ kategoriPemohon.label }}
                             </span>
                         </div>
@@ -1851,42 +2286,69 @@ const submit = () => {
                             v-if="alurSteps.length === 0"
                             class="text-xs text-slate-600 leading-relaxed bg-slate-50 rounded-lg px-3 py-2.5"
                         >
-                            Jabatan Anda berada di level tertinggi Biro, sehingga tidak ada jenjang persetujuan di dalam biro.
+                            Jabatan Anda berada di level tertinggi Biro,
+                            sehingga tidak ada jenjang persetujuan di dalam
+                            biro.
                         </p>
 
                         <ol v-else class="relative">
                             <li class="flex gap-3 pb-3 relative">
-                                <span class="absolute left-[13px] top-7 bottom-0 w-px bg-slate-200"></span>
-                                <span class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-emerald-600 text-white text-[11px] font-bold flex items-center justify-center">1</span>
+                                <span
+                                    class="absolute left-[13px] top-7 bottom-0 w-px bg-slate-200"
+                                ></span>
+                                <span
+                                    class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-emerald-600 text-white text-[11px] font-bold flex items-center justify-center"
+                                    >1</span
+                                >
                                 <div class="min-w-0 pt-0.5">
-                                    <p class="text-sm font-semibold text-slate-800">Anda (Pemohon)</p>
-                                    <p class="text-[11px] text-slate-400">Mengajukan cuti</p>
+                                    <p
+                                        class="text-sm font-semibold text-slate-800"
+                                    >
+                                        Anda (Pemohon)
+                                    </p>
+                                    <p class="text-[11px] text-slate-400">
+                                        Mengajukan cuti
+                                    </p>
                                 </div>
                             </li>
                             <li
                                 v-for="(step, idx) in alurSteps"
                                 :key="step.level"
                                 class="flex gap-3 relative"
-                                :class="idx < alurSteps.length - 1 ? 'pb-3' : ''"
+                                :class="
+                                    idx < alurSteps.length - 1 ? 'pb-3' : ''
+                                "
                             >
                                 <span
                                     v-if="idx < alurSteps.length - 1"
                                     class="absolute left-[13px] top-7 bottom-0 w-px bg-slate-200"
                                 ></span>
-                                <span class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold flex items-center justify-center">
+                                <span
+                                    class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold flex items-center justify-center"
+                                >
                                     {{ step.no + 1 }}
                                 </span>
                                 <div class="min-w-0 pt-0.5">
-                                    <p class="text-sm font-semibold text-slate-800">{{ step.judul }}</p>
-                                    <p class="text-[11px] text-slate-400">{{ step.sub }}</p>
+                                    <p
+                                        class="text-sm font-semibold text-slate-800"
+                                    >
+                                        {{ step.judul }}
+                                    </p>
+                                    <p class="text-[11px] text-slate-400">
+                                        {{ step.sub }}
+                                    </p>
                                 </div>
                             </li>
                         </ol>
                     </section>
 
                     <!-- Ketentuan (bisa dilipat agar kolom tetap ringkas) -->
-                    <details class="group bg-white rounded-2xl shadow-sm border border-slate-200">
-                        <summary class="flex items-center justify-between gap-2 cursor-pointer list-none px-4 py-3 text-sm font-bold text-slate-800">
+                    <details
+                        class="group bg-white rounded-2xl shadow-sm border border-slate-200"
+                    >
+                        <summary
+                            class="flex items-center justify-between gap-2 cursor-pointer list-none px-4 py-3 text-sm font-bold text-slate-800"
+                        >
                             Ketentuan Pengajuan
                             <svg
                                 class="w-3.5 h-3.5 text-slate-500 transition-transform group-open:rotate-180"
@@ -1894,7 +2356,12 @@ const submit = () => {
                                 stroke="currentColor"
                                 viewBox="0 0 24 24"
                             >
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
                             </svg>
                         </summary>
                         <ul class="divide-y divide-slate-100 px-4 pb-3">
@@ -1903,10 +2370,24 @@ const submit = () => {
                                 :key="idx"
                                 class="flex items-start gap-2.5 py-2"
                             >
-                                <svg class="w-4 h-4 text-emerald-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
+                                <svg
+                                    class="w-4 h-4 text-emerald-600 mt-0.5 shrink-0"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2.5"
+                                        d="M5 13l4 4L19 7"
+                                    ></path>
                                 </svg>
-                                <p class="text-[12px] text-slate-600 leading-snug">{{ item }}</p>
+                                <p
+                                    class="text-[12px] text-slate-600 leading-snug"
+                                >
+                                    {{ item }}
+                                </p>
                             </li>
                         </ul>
                     </details>
@@ -1932,16 +2413,30 @@ const submit = () => {
                     <span class="h-1 w-10 rounded-full bg-slate-200"></span>
                 </div>
 
-                <div class="px-4 pt-1 sm:pt-4 pb-2 flex items-center justify-between shrink-0">
-                    <h3 class="text-base font-bold text-slate-800">Pilih Tanggal Cuti</h3>
+                <div
+                    class="px-4 pt-1 sm:pt-4 pb-2 flex items-center justify-between shrink-0"
+                >
+                    <h3 class="text-base font-bold text-slate-800">
+                        Pilih Tanggal Cuti
+                    </h3>
                     <button
                         type="button"
                         @click="tutupSheetTanggal"
                         class="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1.5 rounded-full transition"
                         aria-label="Tutup"
                     >
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        <svg
+                            class="w-5 h-5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12"
+                            ></path>
                         </svg>
                     </button>
                 </div>
@@ -1951,12 +2446,30 @@ const submit = () => {
                     <div class="flex items-center justify-between mb-2">
                         <button
                             type="button"
-                            @click="pickerBulan ? geserTahunKalender(-1) : prevCalendarMonth()"
+                            @click="
+                                pickerBulan
+                                    ? geserTahunKalender(-1)
+                                    : prevCalendarMonth()
+                            "
                             class="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition"
-                            :aria-label="pickerBulan ? 'Tahun sebelumnya' : 'Bulan sebelumnya'"
+                            :aria-label="
+                                pickerBulan
+                                    ? 'Tahun sebelumnya'
+                                    : 'Bulan sebelumnya'
+                            "
                         >
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                            <svg
+                                class="w-4 h-4"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M15 19l-7-7 7-7"
+                                ></path>
                             </svg>
                         </button>
 
@@ -1974,7 +2487,12 @@ const submit = () => {
                                 stroke="currentColor"
                                 viewBox="0 0 24 24"
                             >
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
                             </svg>
                         </button>
 
@@ -1988,12 +2506,30 @@ const submit = () => {
                             </button>
                             <button
                                 type="button"
-                                @click="pickerBulan ? geserTahunKalender(1) : nextCalendarMonth()"
+                                @click="
+                                    pickerBulan
+                                        ? geserTahunKalender(1)
+                                        : nextCalendarMonth()
+                                "
                                 class="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition"
-                                :aria-label="pickerBulan ? 'Tahun berikutnya' : 'Bulan berikutnya'"
+                                :aria-label="
+                                    pickerBulan
+                                        ? 'Tahun berikutnya'
+                                        : 'Bulan berikutnya'
+                                "
                             >
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                                <svg
+                                    class="w-4 h-4"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2"
+                                        d="M9 5l7 7-7 7"
+                                    ></path>
                                 </svg>
                             </button>
                         </div>
@@ -2020,8 +2556,9 @@ const submit = () => {
                     <!-- Kalender -->
                     <div v-else>
                         <p class="text-[11px] text-slate-400 mb-1.5">
-                            Ketuk tanggal untuk memilih, ketuk lagi untuk membatalkan. Ketuk tanggal lain untuk cuti lebih dari sehari
-                            (maksimal 3 bulan per pengajuan).
+                            Ketuk tanggal untuk memilih, ketuk lagi untuk
+                            membatalkan. Ketuk tanggal lain untuk cuti lebih
+                            dari sehari (maksimal 3 bulan per pengajuan).
                         </p>
 
                         <div class="grid grid-cols-7 text-center mb-1">
@@ -2035,7 +2572,10 @@ const submit = () => {
                         </div>
 
                         <div class="grid grid-cols-7 gap-y-1">
-                            <template v-for="(cell, idx) in calendarDays" :key="idx">
+                            <template
+                                v-for="(cell, idx) in calendarDays"
+                                :key="idx"
+                            >
                                 <div v-if="!cell" class="h-9"></div>
                                 <div
                                     v-else
@@ -2046,12 +2586,16 @@ const submit = () => {
                                         type="button"
                                         :disabled="cell.isLocked"
                                         :aria-label="`${cell.day}${cell.libur ? ', ' + cell.libur.judul : ''}`"
-                                        :aria-pressed="cell.isStart || cell.isEnd"
+                                        :aria-pressed="
+                                            cell.isStart || cell.isEnd
+                                        "
                                         @click="pilihTanggal(cell)"
                                         class="relative h-9 w-9 flex items-center justify-center rounded-full text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
                                         :class="[
                                             cellClass(cell),
-                                            cell.isToday && !cell.isStart && !cell.isEnd
+                                            cell.isToday &&
+                                            !cell.isStart &&
+                                            !cell.isEnd
                                                 ? 'ring-1 ring-slate-300'
                                                 : '',
                                             sorotTanggal === cell.dateStr
@@ -2078,20 +2622,36 @@ const submit = () => {
                     </div>
 
                     <!-- Legenda + Reset -->
-                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-3 px-2.5 py-2 rounded-lg bg-slate-50">
+                    <div
+                        class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-3 px-2.5 py-2 rounded-lg bg-slate-50"
+                    >
                         <div class="flex items-center gap-1.5">
-                            <span class="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
+                            <span
+                                class="w-2.5 h-2.5 rounded-full bg-emerald-600"
+                            ></span>
                             <span class="text-[10px] text-slate-500">
-                                Dipilih{{ draftStart ? ` (${estimasiDraft} hari kerja)` : "" }}
+                                Dipilih{{
+                                    draftStart
+                                        ? ` (${estimasiDraft} hari kerja)`
+                                        : ""
+                                }}
                             </span>
                         </div>
                         <div class="flex items-center gap-1.5">
-                            <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
-                            <span class="text-[10px] text-slate-500">Libur Nasional</span>
+                            <span
+                                class="w-2.5 h-2.5 rounded-full bg-rose-500"
+                            ></span>
+                            <span class="text-[10px] text-slate-500"
+                                >Libur Nasional</span
+                            >
                         </div>
                         <div class="flex items-center gap-1.5">
-                            <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                            <span class="text-[10px] text-slate-500">Cuti Bersama</span>
+                            <span
+                                class="w-2.5 h-2.5 rounded-full bg-amber-500"
+                            ></span>
+                            <span class="text-[10px] text-slate-500"
+                                >Cuti Bersama</span
+                            >
                         </div>
                         <button
                             v-if="draftStart"
@@ -2106,21 +2666,35 @@ const submit = () => {
                     <!-- Libur bulan ini -->
                     <div class="mt-3">
                         <div class="flex items-center justify-between mb-1.5">
-                            <p class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                            <p
+                                class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider"
+                            >
                                 Libur bulan ini
                             </p>
-                            <p class="text-[10px] font-semibold text-slate-400 capitalize">
+                            <p
+                                class="text-[10px] font-semibold text-slate-400 capitalize"
+                            >
                                 {{ calendarLabel }}
                             </p>
                         </div>
 
-                        <ul v-if="hariLiburBulanIni.length > 0" class="space-y-1.5 max-h-36 overflow-y-auto pr-0.5">
-                            <li v-for="libur in hariLiburBulanIni" :key="libur.id">
+                        <ul
+                            v-if="hariLiburBulanIni.length > 0"
+                            class="space-y-1.5 max-h-36 overflow-y-auto pr-0.5"
+                        >
+                            <li
+                                v-for="libur in hariLiburBulanIni"
+                                :key="libur.id"
+                            >
                                 <button
                                     type="button"
                                     @click="sorotLibur(libur)"
                                     class="w-full flex items-center gap-2.5 rounded-lg border border-slate-100 bg-slate-50/70 px-2 py-1.5 text-left hover:bg-slate-50 transition"
-                                    :class="sorotTanggal === libur.tanggal ? 'ring-1 ring-rose-300' : ''"
+                                    :class="
+                                        sorotTanggal === libur.tanggal
+                                            ? 'ring-1 ring-rose-300'
+                                            : ''
+                                    "
                                 >
                                     <span
                                         class="shrink-0 rounded-md px-1.5 py-1 text-[10px] font-extrabold leading-none whitespace-nowrap"
@@ -2132,10 +2706,14 @@ const submit = () => {
                                     >
                                         {{ libur.hari }} {{ libur.bulan }}
                                     </span>
-                                    <span class="min-w-0 flex-1 text-xs font-semibold text-slate-700 break-words leading-snug">
+                                    <span
+                                        class="min-w-0 flex-1 text-xs font-semibold text-slate-700 break-words leading-snug"
+                                    >
                                         {{ libur.judul }}
                                     </span>
-                                    <span class="shrink-0 flex flex-col items-end gap-0.5">
+                                    <span
+                                        class="shrink-0 flex flex-col items-end gap-0.5"
+                                    >
                                         <span
                                             class="rounded-full px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wide whitespace-nowrap"
                                             :class="
@@ -2163,32 +2741,49 @@ const submit = () => {
                     </div>
                 </div>
 
-                <div class="px-4 py-3 border-t border-slate-100 bg-white shrink-0 rounded-b-2xl">
+                <div
+                    class="px-4 py-3 border-t border-slate-100 bg-white shrink-0 rounded-b-2xl"
+                >
                     <!-- Keterangan kenapa tanggal terpilih tidak dihitung (libur) -->
                     <div
                         v-if="draftStart && liburDalamDraft.length > 0"
                         class="mb-2 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-[11px] text-blue-700 leading-relaxed break-words"
                     >
-                        <span class="font-semibold">{{ liburDalamDraft.length }} tanggal tidak dihitung</span>
+                        <span class="font-semibold"
+                            >{{ liburDalamDraft.length }} tanggal tidak
+                            dihitung</span
+                        >
                         karena libur:
-                        <span v-for="(libur, idx) in liburDalamDraft" :key="libur.tanggal">
+                        <span
+                            v-for="(libur, idx) in liburDalamDraft"
+                            :key="libur.tanggal"
+                        >
                             <span class="font-semibold">{{ libur.judul }}</span>
-                            ({{ formatTanggalPendek(libur.tanggal) }}, {{ libur.jenisLabel }})<span v-if="idx < liburDalamDraft.length - 1">, </span>
+                            ({{ formatTanggalPendek(libur.tanggal) }},
+                            {{ libur.jenisLabel }})<span
+                                v-if="idx < liburDalamDraft.length - 1"
+                                >,
+                            </span>
                         </span>
                     </div>
                     <p
                         v-if="draftStart && estimasiDraft === 0"
                         class="text-[11px] font-bold text-red-500 mb-2 text-center"
                     >
-                        Rentang ini hanya berisi akhir pekan / hari libur, jadi 0 hari kerja.
+                        Rentang ini hanya berisi akhir pekan / hari libur, jadi
+                        0 hari kerja.
                     </p>
                     <!-- Peringatan dini: saldo tahun tujuan belum dibuat Admin SDM -->
                     <div
                         v-if="tahunTanpaSaldoDraft !== null"
                         class="mb-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-[11px] text-red-700 leading-relaxed break-words"
                     >
-                        <span class="font-semibold">Saldo cuti tahun {{ tahunTanpaSaldoDraft }} belum tersedia.</span>
-                        Cuti Tahunan di tahun itu belum bisa diajukan sampai Admin SDM membuat saldonya.
+                        <span class="font-semibold"
+                            >Saldo cuti tahun {{ tahunTanpaSaldoDraft }} belum
+                            tersedia.</span
+                        >
+                        Cuti Tahunan di tahun itu belum bisa diajukan sampai
+                        Admin SDM membuat saldonya.
                     </div>
                     <button
                         type="button"
@@ -2196,10 +2791,22 @@ const submit = () => {
                         :disabled="!draftStart"
                         class="w-full min-h-[46px] flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md shadow-emerald-600/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
+                        <svg
+                            class="w-4 h-4 shrink-0"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2.5"
+                                d="M5 13l4 4L19 7"
+                            ></path>
                         </svg>
-                        <span class="truncate">{{ labelTombolPilihTanggal }}</span>
+                        <span class="truncate">{{
+                            labelTombolPilihTanggal
+                        }}</span>
                     </button>
                 </div>
             </div>
@@ -2223,10 +2830,22 @@ const submit = () => {
                     <span class="h-1 w-10 rounded-full bg-slate-200"></span>
                 </div>
 
-                <div class="px-4 pt-1 sm:pt-4 pb-2 flex items-center justify-between gap-3 shrink-0">
+                <div
+                    class="px-4 pt-1 sm:pt-4 pb-2 flex items-center justify-between gap-3 shrink-0"
+                >
                     <div class="flex items-center gap-2 min-w-0">
-                        <svg class="w-5 h-5 text-emerald-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                        <svg
+                            class="w-5 h-5 text-emerald-600 shrink-0"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                            ></path>
                         </svg>
                         <h3 class="text-base font-bold text-slate-800 truncate">
                             Ketentuan &amp; Alur Persetujuan
@@ -2238,8 +2857,18 @@ const submit = () => {
                         class="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1.5 rounded-full transition shrink-0"
                         aria-label="Tutup"
                     >
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        <svg
+                            class="w-5 h-5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12"
+                            ></path>
                         </svg>
                     </button>
                 </div>
@@ -2247,9 +2876,15 @@ const submit = () => {
                 <div class="px-4 pb-3 overflow-y-auto flex-1 space-y-5">
                     <!-- Alur Persetujuan Anda -->
                     <section>
-                        <div class="flex items-center justify-between gap-2 mb-2">
-                            <h4 class="text-xs font-extrabold text-slate-700">Alur Persetujuan Anda</h4>
-                            <span class="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 text-[10px] font-bold">
+                        <div
+                            class="flex items-center justify-between gap-2 mb-2"
+                        >
+                            <h4 class="text-xs font-extrabold text-slate-700">
+                                Alur Persetujuan Anda
+                            </h4>
+                            <span
+                                class="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 text-[10px] font-bold"
+                            >
                                 {{ kategoriPemohon.label }}
                             </span>
                         </div>
@@ -2258,34 +2893,57 @@ const submit = () => {
                             v-if="alurSteps.length === 0"
                             class="text-xs text-slate-600 leading-relaxed bg-slate-50 rounded-lg px-3 py-2.5"
                         >
-                            Jabatan Anda berada di level tertinggi Biro, sehingga tidak ada jenjang persetujuan di dalam biro.
+                            Jabatan Anda berada di level tertinggi Biro,
+                            sehingga tidak ada jenjang persetujuan di dalam
+                            biro.
                         </p>
 
                         <ol v-else class="relative">
                             <li class="flex gap-3 pb-3 relative">
-                                <span class="absolute left-[13px] top-7 bottom-0 w-px bg-slate-200"></span>
-                                <span class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-emerald-600 text-white text-[11px] font-bold flex items-center justify-center">1</span>
+                                <span
+                                    class="absolute left-[13px] top-7 bottom-0 w-px bg-slate-200"
+                                ></span>
+                                <span
+                                    class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-emerald-600 text-white text-[11px] font-bold flex items-center justify-center"
+                                    >1</span
+                                >
                                 <div class="min-w-0 pt-0.5">
-                                    <p class="text-sm font-semibold text-slate-800">Anda (Pemohon)</p>
-                                    <p class="text-[11px] text-slate-400">Mengajukan cuti</p>
+                                    <p
+                                        class="text-sm font-semibold text-slate-800"
+                                    >
+                                        Anda (Pemohon)
+                                    </p>
+                                    <p class="text-[11px] text-slate-400">
+                                        Mengajukan cuti
+                                    </p>
                                 </div>
                             </li>
                             <li
                                 v-for="(step, idx) in alurSteps"
                                 :key="step.level"
                                 class="flex gap-3 relative"
-                                :class="idx < alurSteps.length - 1 ? 'pb-3' : ''"
+                                :class="
+                                    idx < alurSteps.length - 1 ? 'pb-3' : ''
+                                "
                             >
                                 <span
                                     v-if="idx < alurSteps.length - 1"
                                     class="absolute left-[13px] top-7 bottom-0 w-px bg-slate-200"
                                 ></span>
-                                <span class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold flex items-center justify-center">
+                                <span
+                                    class="relative z-10 h-7 w-7 shrink-0 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold flex items-center justify-center"
+                                >
                                     {{ step.no + 1 }}
                                 </span>
                                 <div class="min-w-0 pt-0.5">
-                                    <p class="text-sm font-semibold text-slate-800">{{ step.judul }}</p>
-                                    <p class="text-[11px] text-slate-400">{{ step.sub }}</p>
+                                    <p
+                                        class="text-sm font-semibold text-slate-800"
+                                    >
+                                        {{ step.judul }}
+                                    </p>
+                                    <p class="text-[11px] text-slate-400">
+                                        {{ step.sub }}
+                                    </p>
                                 </div>
                             </li>
                         </ol>
@@ -2293,30 +2951,58 @@ const submit = () => {
 
                     <!-- Ketentuan Pengajuan -->
                     <section>
-                        <h4 class="text-xs font-extrabold text-slate-700 mb-2">Ketentuan Pengajuan</h4>
+                        <h4 class="text-xs font-extrabold text-slate-700 mb-2">
+                            Ketentuan Pengajuan
+                        </h4>
                         <ul class="divide-y divide-slate-100">
                             <li
                                 v-for="(item, idx) in daftarKetentuan"
                                 :key="idx"
                                 class="flex items-start gap-2.5 py-2"
                             >
-                                <svg class="w-4 h-4 text-emerald-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
+                                <svg
+                                    class="w-4 h-4 text-emerald-600 mt-0.5 shrink-0"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2.5"
+                                        d="M5 13l4 4L19 7"
+                                    ></path>
                                 </svg>
-                                <p class="text-[13px] text-slate-600 leading-snug">{{ item }}</p>
+                                <p
+                                    class="text-[13px] text-slate-600 leading-snug"
+                                >
+                                    {{ item }}
+                                </p>
                             </li>
                         </ul>
                     </section>
                 </div>
 
-                <div class="px-4 py-3 border-t border-slate-100 shrink-0 rounded-b-2xl">
+                <div
+                    class="px-4 py-3 border-t border-slate-100 shrink-0 rounded-b-2xl"
+                >
                     <button
                         type="button"
                         @click="sheetKetentuanTerbuka = false"
                         class="w-full min-h-[46px] flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md shadow-emerald-600/20 transition"
                     >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
+                        <svg
+                            class="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2.5"
+                                d="M5 13l4 4L19 7"
+                            ></path>
                         </svg>
                         Mengerti
                     </button>

@@ -78,6 +78,12 @@ const props = defineProps({
         type: String,
         default: "",
     },
+    // Pilihan jenis kepegawaian (PNS / PPPK), dikirim dari AdminController@kelolaPegawai
+    // CPNS dihapus sesuai permintaan
+    daftarStatusKepegawaian: {
+        type: Array,
+        default: () => ["PNS", "PPPK"],
+    },
 });
 
 // ---> SISTEM PENDETEKSI ERROR OTOMATIS <---
@@ -109,6 +115,9 @@ const searchNama = ref("");
 const selectedKelompokSubstansi = ref("");
 // Filter status kepegawaian (bawaan: hanya yang Aktif)
 const selectedStatus = ref("Aktif");
+// Filter status kepegawaian (PNS / PPPK / Belum diisi). Bawaan: semua.
+
+const selectedStatusKepegawaian = ref("");
 // Harus sama dengan STATUS_PEGAWAI di AdminController
 const daftarStatus = [
     "Aktif",
@@ -163,10 +172,16 @@ const filteredPegawai = computed(() => {
               : kunciKelompok(kelompokSubstansi) ===
                 kunciKelompok(selectedKelompokSubstansi.value);
 
+        const statusKepegawaian = String(item?.status_kepegawaian ?? "").trim();
+        const cocokStatusKepegawaian =
+            !selectedStatusKepegawaian.value ||
+            statusKepegawaian === selectedStatusKepegawaian.value;
+
         return (
             (!keyword || nama.includes(keyword) || nip.includes(keyword)) &&
             cocokKelompok &&
-            (!selectedStatus.value || status === selectedStatus.value)
+            (!selectedStatus.value || status === selectedStatus.value) &&
+            cocokStatusKepegawaian
         );
     });
 });
@@ -245,6 +260,21 @@ const dropdownFilters = computed(() => {
                 ...daftarStatus.map((s) => ({ value: s, label: s })),
             ],
         },
+        {
+            key: "statusKepegawaian",
+            id: "filter-status-kepegawaian-admin",
+            ariaLabel: "Filter status kepegawaian",
+            widthClass: "lg:w-64",
+            withIcon: true,
+            selected: selectedStatusKepegawaian.value,
+            options: [
+                { value: "", label: "Semua Status Kepegawaian" },
+                ...props.daftarStatusKepegawaian.map((s) => ({
+                    value: s,
+                    label: s,
+                })),
+            ],
+        },
     ];
 
     return daftar.map((f) => {
@@ -261,6 +291,8 @@ const dropdownFilters = computed(() => {
 const pilihFilter = (key, nilai) => {
     if (key === "kelompok") selectedKelompokSubstansi.value = nilai;
     else if (key === "status") selectedStatus.value = nilai;
+    else if (key === "statusKepegawaian")
+        selectedStatusKepegawaian.value = nilai;
     dropdownFilterTerbuka.value = null;
 };
 
@@ -280,9 +312,17 @@ const paginatedPegawai = computed(() => {
     return filteredPegawai.value.slice(start, start + itemsPerPage);
 });
 
-watch([searchNama, selectedKelompokSubstansi, selectedStatus], () => {
-    currentPage.value = 1;
-});
+watch(
+    [
+        searchNama,
+        selectedKelompokSubstansi,
+        selectedStatus,
+        selectedStatusKepegawaian,
+    ],
+    () => {
+        currentPage.value = 1;
+    },
+);
 
 // Jaga halaman aktif tetap valid saat data berkurang (mis. setelah hapus
 // pegawai terakhir di halaman terakhir).
@@ -337,6 +377,7 @@ const form = useForm({
     no_telepon: "",
     alamat_domisili: "",
     status_aktif: "Aktif",
+    status_kepegawaian: "",
 });
 
 // ===================== DROPDOWN KELOMPOK SUBSTANSI & TIM KERJA (FORM) =====================
@@ -838,6 +879,20 @@ const pilihStatusForm = (nilai) => {
     dropdownFormTerbuka.value = null;
 };
 
+// Status Kepegawaian (PNS / PPPK) — terpisah dari status_aktif
+const opsiStatusKepegawaianForm = computed(() =>
+    props.daftarStatusKepegawaian.map((s) => ({ value: s, label: s })),
+);
+
+const labelStatusKepegawaianForm = computed(
+    () => form.status_kepegawaian || "-- Pilih Status Kepegawaian --",
+);
+
+const pilihStatusKepegawaianForm = (nilai) => {
+    form.status_kepegawaian = nilai;
+    dropdownFormTerbuka.value = null;
+};
+
 // Saat daftar (dropdown form ATAU jabatan) terbuka, gulung modal secukupnya
 // supaya seluruh kotak daftar kelihatan, walau melewati tepi bawah modal.
 const gulungKeDaftarTerbuka = () => {
@@ -913,6 +968,7 @@ const openEditModal = (item) => {
     form.no_telepon = item.no_telepon || "";
     form.alamat_domisili = item.alamat_domisili || "";
     form.status_aktif = item.status_aktif || "Aktif";
+    form.status_kepegawaian = item.status_kepegawaian || "";
 
     // Terapkan aturan role (mis. Kepala Biro: kosongkan kelompok "-" dari data lama)
     terapkanAturanRole();
@@ -938,14 +994,18 @@ const submitForm = () => {
     // Dropdown kustom tidak punya validasi "required" bawaan browser, jadi
     // Kelompok Substansi (wajib kecuali Kepala Biro) dicek di sini.
     form.clearErrors();
+    const galat = {};
     if (
         roleAktif.value !== 6 &&
         !String(form.kelompok_substansi || "").trim()
     ) {
-        form.setError(
-            "kelompok_substansi",
-            "Kelompok Substansi wajib dipilih.",
-        );
+        galat.kelompok_substansi = "Kelompok Substansi wajib dipilih.";
+    }
+    if (!String(form.status_kepegawaian || "").trim()) {
+        galat.status_kepegawaian = "Status Kepegawaian wajib dipilih.";
+    }
+    if (Object.keys(galat).length) {
+        form.setError(galat);
         return;
     }
 
@@ -1202,7 +1262,12 @@ const pegawaiTerpilih = computed(() =>
 // Ganti filter/pencarian => pilihan direset supaya tidak ada pegawai yang
 // terhapus tanpa terlihat oleh admin.
 watch(
-    [searchNama, selectedKelompokSubstansi, selectedStatus],
+    [
+        searchNama,
+        selectedKelompokSubstansi,
+        selectedStatus,
+        selectedStatusKepegawaian,
+    ],
     kosongkanPilihan,
 );
 
@@ -1412,11 +1477,11 @@ onBeforeUnmount(() => {
                 class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-4 sm:p-6 relative z-10"
             >
                 <!-- ================= HEADER HALAMAN =================
-                     Disamakan dengan halaman Rekap Kuota Detail: judul &
-                     deskripsi di kiri, tombol aksi di pojok KANAN ATAS dalam
-                     satu baris (mulai lebar lg). Di layar lebih kecil, tombol
-                     turun ke bawah judul. Tombol yang terlalu banyak akan
-                     membungkus rapi (flex-wrap) tanpa terpotong. -->
+                        Disamakan dengan halaman Rekap Kuota Detail: judul &
+                        deskripsi di kiri, tombol aksi di pojok KANAN ATAS dalam
+                        satu baris (mulai lebar lg). Di layar lebih kecil, tombol
+                        turun ke bawah judul. Tombol yang terlalu banyak akan
+                        membungkus rapi (flex-wrap) tanpa terpotong. -->
                 <div
                     class="flex flex-col lg:flex-row lg:items-start lg:justify-between mb-6 border-b pb-4 gap-4"
                 >
@@ -1488,18 +1553,20 @@ onBeforeUnmount(() => {
                 </div>
 
                 <!-- ================= BARIS FILTER & PENCARIAN =================
-                     Dua dropdown kustom (Kelompok Substansi & Status): daftar
-                     terbuka ke bawah, selebar tombol, tinggi dibatasi (bisa
-                     di-scroll), teks panjang turun ke baris berikutnya, dan
-                     Esc / klik di luar menutupnya. Keduanya dirender lewat
-                     satu v-for dari `dropdownFilters`. -->
+                        Dua dropdown kustom (Kelompok Substansi & Status): daftar
+                        terbuka ke bawah, selebar tombol, tinggi dibatasi (bisa
+                        di-scroll), teks panjang turun ke baris berikutnya, dan
+                        Esc / klik di luar menutupnya. Keduanya dirender lewat
+                        satu v-for dari `dropdownFilters`. -->
                 <div
                     @keydown.esc="dropdownFilterTerbuka = null"
                     class="mb-5 flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center lg:gap-2.5"
                 >
                     <!-- Search Input dengan Icon
-                         Mobile: full width | Desktop: flex-1 dalam satu baris -->
-                    <div class="relative min-w-0 w-full lg:flex-1 lg:min-w-[12rem] lg:max-w-sm">
+                            Mobile: full width | Desktop: flex-1 dalam satu baris -->
+                    <div
+                        class="relative min-w-0 w-full lg:flex-1 lg:min-w-[12rem] lg:max-w-sm"
+                    >
                         <div
                             class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
                         >
@@ -1552,97 +1619,98 @@ onBeforeUnmount(() => {
                     </div>
 
                     <!-- DROPDOWN FILTER KUSTOM: Kelompok + Status
-                         Mobile: 2 kolom sampingan (hemat) | Desktop: ikut baris flex -->
+                            Mobile: 2 kolom sampingan (hemat) | Desktop: ikut baris flex -->
                     <div
                         class="grid grid-cols-2 gap-2 w-full lg:w-auto lg:flex lg:gap-2.5 lg:shrink-0"
                     >
-                    <div
-                        v-for="f in dropdownFilters"
-                        :key="f.key"
-                        data-dropdown
-                        class="relative w-full min-w-0 lg:shrink-0"
-                        :class="f.widthClass"
-                    >
                         <div
-                            class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+                            v-for="f in dropdownFilters"
+                            :key="f.key"
+                            data-dropdown
+                            class="relative w-full min-w-0 lg:shrink-0"
+                            :class="f.widthClass"
                         >
-                            <svg
-                                class="w-4 h-4 text-gray-500"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                                aria-hidden="true"
+                            <div
+                                class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
                             >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
-                                />
-                            </svg>
-                        </div>
-                        <button
-                            :id="f.id"
-                            type="button"
-                            :aria-label="f.ariaLabel"
-                            aria-haspopup="listbox"
-                            :aria-expanded="dropdownFilterTerbuka === f.key"
-                            :title="f.selectedLabel"
-                            @click="toggleDropdownFilter(f.key)"
-                            class="w-full min-h-[44px] text-left text-base sm:text-sm border border-gray-400 hover:border-gray-500 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500 focus:outline-none rounded-lg shadow-sm text-gray-900 py-2 pl-9 pr-8 bg-white cursor-pointer transition-colors"
-                        >
-                            <span class="block truncate">{{
-                                f.selectedLabel
-                            }}</span>
-                        </button>
-                        <span
-                            class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
-                        >
-                            <svg
-                                class="w-3.5 h-3.5 text-gray-600 transition-transform"
-                                :class="{
-                                    'rotate-180':
-                                        dropdownFilterTerbuka === f.key,
-                                }"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                                aria-hidden="true"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M19 9l-7 7-7-7"
-                                ></path>
-                            </svg>
-                        </span>
-                        <ul
-                            v-if="dropdownFilterTerbuka === f.key"
-                            role="listbox"
-                            class="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-y-auto rounded-lg border border-gray-400 bg-white py-1 shadow-xl"
-                        >
-                            <li v-for="opt in f.options" :key="opt.value">
-                                <button
-                                    type="button"
-                                    role="option"
-                                    :title="opt.label"
-                                    :aria-selected="f.selected === opt.value"
-                                    @click="pilihFilter(f.key, opt.value)"
-                                    :class="
-                                        f.selected === opt.value
-                                            ? 'bg-indigo-100 text-indigo-800 font-semibold'
-                                            : 'text-gray-800 hover:bg-gray-100'
-                                    "
-                                    class="block w-full whitespace-normal break-words leading-tight px-3 py-2 text-left text-sm cursor-pointer"
+                                <svg
+                                    class="w-4 h-4 text-gray-500"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                    aria-hidden="true"
                                 >
-                                    {{ opt.label }}
-                                </button>
-                            </li>
-                        </ul>
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2"
+                                        d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+                                    />
+                                </svg>
+                            </div>
+                            <button
+                                :id="f.id"
+                                type="button"
+                                :aria-label="f.ariaLabel"
+                                aria-haspopup="listbox"
+                                :aria-expanded="dropdownFilterTerbuka === f.key"
+                                :title="f.selectedLabel"
+                                @click="toggleDropdownFilter(f.key)"
+                                class="w-full min-h-[44px] text-left text-base sm:text-sm border border-gray-400 hover:border-gray-500 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500 focus:outline-none rounded-lg shadow-sm text-gray-900 py-2 pl-9 pr-8 bg-white cursor-pointer transition-colors"
+                            >
+                                <span class="block truncate">{{
+                                    f.selectedLabel
+                                }}</span>
+                            </button>
+                            <span
+                                class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
+                            >
+                                <svg
+                                    class="w-3.5 h-3.5 text-gray-600 transition-transform"
+                                    :class="{
+                                        'rotate-180':
+                                            dropdownFilterTerbuka === f.key,
+                                    }"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                    aria-hidden="true"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2"
+                                        d="M19 9l-7 7-7-7"
+                                    ></path>
+                                </svg>
+                            </span>
+                            <ul
+                                v-if="dropdownFilterTerbuka === f.key"
+                                role="listbox"
+                                class="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-y-auto rounded-lg border border-gray-400 bg-white py-1 shadow-xl"
+                            >
+                                <li v-for="opt in f.options" :key="opt.value">
+                                    <button
+                                        type="button"
+                                        role="option"
+                                        :title="opt.label"
+                                        :aria-selected="
+                                            f.selected === opt.value
+                                        "
+                                        @click="pilihFilter(f.key, opt.value)"
+                                        :class="
+                                            f.selected === opt.value
+                                                ? 'bg-indigo-100 text-indigo-800 font-semibold'
+                                                : 'text-gray-800 hover:bg-gray-100'
+                                        "
+                                        class="block w-full whitespace-normal break-words leading-tight px-3 py-2 text-left text-sm cursor-pointer"
+                                    >
+                                        {{ opt.label }}
+                                    </button>
+                                </li>
+                            </ul>
+                        </div>
                     </div>
-                    </div>
-
                 </div>
 
                 <!-- Penanda filter kelompok yang sedang aktif -->
@@ -1730,15 +1798,15 @@ onBeforeUnmount(() => {
                 <!-- ================= END BAR AKSI HAPUS MASSAL ================= -->
 
                 <!-- ================= TABEL (DESKTOP, lg ke atas) =================
-                     6 kolom: Pegawai (Nama + NIP) | Kelompok & Tim Kerja |
-                     Jabatan | Hak Akses & Status | Aksi.
-                     PERBAIKAN: lebar minimum kolom dikecilkan & padding sel
-                     dirapatkan; kolom Aksi dibuat "menyusut sesuai isi"
-                     (w-px + whitespace-nowrap) sehingga tiga tombol (Ubah,
-                     Atur ulang sandi, Hapus) SELALU tampil utuh tanpa
-                     terpotong. Kolom teks lain yang menyerap sisa ruang dan
-                     membungkus teks panjang (break-words + tooltip title).
-                     Di bawah lg (tablet / HP) ditampilkan sebagai kartu. -->
+                        6 kolom: Pegawai (Nama + NIP) | Kelompok & Tim Kerja |
+                        Jabatan | Hak Akses & Status | Aksi.
+                        PERBAIKAN: lebar minimum kolom dikecilkan & padding sel
+                        dirapatkan; kolom Aksi dibuat "menyusut sesuai isi"
+                        (w-px + whitespace-nowrap) sehingga tiga tombol (Ubah,
+                        Atur ulang sandi, Hapus) SELALU tampil utuh tanpa
+                        terpotong. Kolom teks lain yang menyerap sisa ruang dan
+                        membungkus teks panjang (break-words + tooltip title).
+                        Di bawah lg (tablet / HP) ditampilkan sebagai kartu. -->
                 <div class="hidden overflow-x-auto lg:block">
                     <table
                         class="w-full table-auto divide-y divide-gray-200 text-sm"
@@ -1895,6 +1963,12 @@ onBeforeUnmount(() => {
                                         >
                                             {{ item?.jabatan || "-" }}
                                         </div>
+                                        <span
+                                            v-if="item?.status_kepegawaian"
+                                            class="mt-1 inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700"
+                                        >
+                                            {{ item.status_kepegawaian }}
+                                        </span>
                                     </td>
 
                                     <!-- Hak Akses + Status -->
@@ -1975,7 +2049,7 @@ onBeforeUnmount(() => {
                                             </button>
 
                                             <!-- Hapus: selalu bisa diklik, pop-up berbeda
-                                                 tergantung item.bisa_dihapus (lihat konfirmasiHapus) -->
+                                                    tergantung item.bisa_dihapus (lihat konfirmasiHapus) -->
                                             <button
                                                 type="button"
                                                 @click="konfirmasiHapus(item)"
@@ -2107,6 +2181,16 @@ onBeforeUnmount(() => {
                                     class="break-words text-right text-gray-800"
                                 >
                                     {{ item?.jabatan || "-" }}
+                                </dd>
+                            </div>
+                            <div class="flex justify-between gap-3">
+                                <dt class="text-gray-500">
+                                    Status kepegawaian
+                                </dt>
+                                <dd
+                                    class="break-words text-right text-gray-800"
+                                >
+                                    {{ item?.status_kepegawaian || "-" }}
                                 </dd>
                             </div>
                             <div class="flex justify-between gap-3">
@@ -3220,7 +3304,7 @@ onBeforeUnmount(() => {
                                             for="pegawai-status"
                                             class="block text-sm font-medium text-gray-700"
                                         >
-                                            Status Kepegawaian
+                                            Status Pegawai
                                             <span class="text-red-500">*</span>
                                         </label>
                                         <div
@@ -3344,6 +3428,149 @@ onBeforeUnmount(() => {
                                             class="mt-1 text-xs text-red-600"
                                         >
                                             {{ form.errors.status_aktif }}
+                                        </p>
+                                    </div>
+
+                                    <!-- Status Kepegawaian (PNS / PPPK) -->
+                                    <div>
+                                        <label
+                                            for="pegawai-status-kepegawaian"
+                                            class="block text-sm font-medium text-gray-700"
+                                        >
+                                            Status Kepegawaian
+                                            <span class="text-red-500">*</span>
+                                        </label>
+                                        <div
+                                            class="relative"
+                                            data-dropdown-form
+                                        >
+                                            <button
+                                                id="pegawai-status-kepegawaian"
+                                                type="button"
+                                                @click="
+                                                    toggleDropdownForm(
+                                                        'statusKepegawaian',
+                                                    )
+                                                "
+                                                aria-haspopup="listbox"
+                                                :aria-expanded="
+                                                    dropdownFormTerbuka ===
+                                                    'statusKepegawaian'
+                                                "
+                                                :title="
+                                                    labelStatusKepegawaianForm
+                                                "
+                                                :class="
+                                                    kelasTombolForm(
+                                                        'status_kepegawaian',
+                                                    )
+                                                "
+                                            >
+                                                <span
+                                                    class="truncate"
+                                                    :class="
+                                                        kelasLabelForm(
+                                                            form.status_kepegawaian,
+                                                        )
+                                                    "
+                                                    >{{
+                                                        labelStatusKepegawaianForm
+                                                    }}</span
+                                                >
+                                                <svg
+                                                    class="h-4 w-4 flex-shrink-0 text-gray-600 transition-transform"
+                                                    :class="{
+                                                        'rotate-180':
+                                                            dropdownFormTerbuka ===
+                                                            'statusKepegawaian',
+                                                    }"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    viewBox="0 0 24 24"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path
+                                                        stroke-linecap="round"
+                                                        stroke-linejoin="round"
+                                                        stroke-width="2"
+                                                        d="M19 9l-7 7-7-7"
+                                                    />
+                                                </svg>
+                                            </button>
+                                            <ul
+                                                v-if="
+                                                    dropdownFormTerbuka ===
+                                                    'statusKepegawaian'
+                                                "
+                                                role="listbox"
+                                                data-daftar-form
+                                                :class="KELAS_DAFTAR_FORM"
+                                            >
+                                                <li
+                                                    v-for="opt in opsiStatusKepegawaianForm"
+                                                    :key="opt.value"
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        role="option"
+                                                        :aria-selected="
+                                                            form.status_kepegawaian ===
+                                                            opt.value
+                                                        "
+                                                        @click="
+                                                            pilihStatusKepegawaianForm(
+                                                                opt.value,
+                                                            )
+                                                        "
+                                                        :class="
+                                                            kelasOpsiForm(
+                                                                opsiAktif(
+                                                                    form.status_kepegawaian,
+                                                                    opt.value,
+                                                                ),
+                                                            )
+                                                        "
+                                                    >
+                                                        <span
+                                                            class="min-w-0 break-words"
+                                                            :class="
+                                                                opt.value === ''
+                                                                    ? 'text-gray-500'
+                                                                    : ''
+                                                            "
+                                                            >{{
+                                                                opt.label
+                                                            }}</span
+                                                        >
+                                                        <svg
+                                                            v-if="
+                                                                opsiAktif(
+                                                                    form.status_kepegawaian,
+                                                                    opt.value,
+                                                                )
+                                                            "
+                                                            class="h-4 w-4 flex-shrink-0 text-indigo-700"
+                                                            viewBox="0 0 20 20"
+                                                            fill="currentColor"
+                                                            aria-hidden="true"
+                                                        >
+                                                            <path
+                                                                fill-rule="evenodd"
+                                                                d="M16.704 5.29a1 1 0 010 1.415l-7.5 7.5a1 1 0 01-1.415 0l-3.5-3.5a1 1 0 111.415-1.415L8.5 12.086l6.793-6.793a1 1 0 011.415 0z"
+                                                                clip-rule="evenodd"
+                                                            />
+                                                        </svg>
+                                                    </button>
+                                                </li>
+                                            </ul>
+                                        </div>
+                                        <p
+                                            v-if="
+                                                form.errors.status_kepegawaian
+                                            "
+                                            class="mt-1 text-xs text-red-600"
+                                        >
+                                            {{ form.errors.status_kepegawaian }}
                                         </p>
                                     </div>
                                 </div>
@@ -3488,8 +3715,8 @@ onBeforeUnmount(() => {
                             <p class="text-xs text-gray-500 mb-5">
                                 Pastikan kolom pada file mengikuti format
                                 template yang sudah ditentukan (NIP, Nama,
-                                Kelompok Substansi, Tim Kerja, Jabatan, Role,
-                                dsb).
+                                Kelompok Substansi, Tim Kerja, Jabatan, Status
+                                Kepegawaian, Level/Role, dsb).
                             </p>
 
                             <div

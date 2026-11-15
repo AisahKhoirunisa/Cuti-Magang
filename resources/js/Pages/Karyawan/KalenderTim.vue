@@ -221,16 +221,25 @@ const tutupDropdown = () => {
 // Opsi bernilai "-" (pegawai yang tidak punya tim/kelompok) ditampilkan
 // sebagai teks yang jelas. Hanya LABEL yang diganti; nilai asli ("-") tetap
 // dipakai untuk mencocokkan filter & parameter URL, jadi logika tidak berubah.
+// NULL, "" dan "-" dianggap sama: "tidak punya tim/kelompok" (nilai "-").
+const normalisasiNilai = (v) => {
+    const s = String(v ?? "");
+    return s.trim() === "" || s.trim() === "-" ? "-" : s;
+};
+
 const labelOpsi = (opsi) => {
     const kosong = !opsi || String(opsi).trim() === "-";
     if (!kosong) return opsi;
     return filterMode.value === "l2" ? "Tanpa Tim Kerja" : "Tanpa Kelompok";
 };
 
-const opsiFilterLengkap = computed(() => [
-    filterAllLabel.value,
-    ...filterOptions.value,
-]);
+const opsiFilterLengkap = computed(() => {
+    const biasa = filterOptions.value.filter(
+        (o) => normalisasiNilai(o) !== "-",
+    );
+    const adaTanpa = biasa.length !== filterOptions.value.length;
+    return [filterAllLabel.value, ...biasa, ...(adaTanpa ? ["-"] : [])];
+});
 
 const pilihFilter = (opsi) => {
     const berubah = selectedFilter.value !== opsi;
@@ -321,7 +330,7 @@ const cocokDenganFilter = (item) => {
         (filterFieldName.value === "kelompok_substansi"
             ? props.kelompok_substansi
             : null);
-    return nilaiPegawai === selectedFilter.value;
+    return normalisasiNilai(nilaiPegawai) === selectedFilter.value;
 };
 
 // Filter cuti: menyaring status yang boleh tampil, lalu filter lokal

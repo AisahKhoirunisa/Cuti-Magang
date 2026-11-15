@@ -21,6 +21,18 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    // Cuti disetujui yang beririsan dengan BULAN BERJALAN (dari controller).
+    // Sumber popup "Daftar Cuti Disetujui (Bulan Ini)".
+    cutiDisetujuiBulanIni: {
+        type: Array,
+        default: null,
+    },
+    // Cuti disetujui yang sedang berlangsung HARI INI (dari controller),
+    // hanya untuk pegawai yang ada di daftar anggota tim.
+    timCutiHariIni: {
+        type: Array,
+        default: null,
+    },
     cutiDisetujuiPribadi: {
         type: Array,
         default: () => [],
@@ -72,6 +84,12 @@ const user = computed(() => page.props.auth.user);
 
 const isAdminHR = computed(() => user.value.role_id === 5);
 
+// Menandai baris milik akun yang sedang login (label "(Anda)").
+const isSelf = (pegawaiId) =>
+    pegawaiId !== undefined &&
+    pegawaiId !== null &&
+    String(pegawaiId) === String(user.value?.id);
+
 const activeTab = ref("tim");
 
 const isPribadiMode = computed(
@@ -118,6 +136,7 @@ const applyKelompokSubstansiFilter = () => {
                 "stats",
                 "recentCuti",
                 "cutiDisetujuiData",
+                "cutiDisetujuiBulanIni",
                 "cutiDisetujuiPribadi",
                 "cutiDisetujuiChart",
                 "cutiDisetujuiPribadiChart",
@@ -494,13 +513,22 @@ const totalAnggota = computed(() => {
     return Array.isArray(props.anggotaTim) ? props.anggotaTim.length : 0;
 });
 
+// Sumber data "cuti hari ini": pakai timCutiHariIni dari controller (hanya
+// pegawai yang ada di daftar anggota tim, termasuk atasan sendiri) supaya
+// angka kartu SELALU sama dengan isi popup. Cadangan: cutiDisetujuiData.
+const sumberCutiHariIni = computed(() => {
+    if (Array.isArray(props.timCutiHariIni)) return props.timCutiHariIni;
+    return Array.isArray(props.cutiDisetujuiData) ? props.cutiDisetujuiData : [];
+});
+
 const cutiHariIniCount = computed(() => {
-    if (!Array.isArray(props.cutiDisetujuiData)) return 0;
+    const sumber = sumberCutiHariIni.value;
+    if (!Array.isArray(sumber) || sumber.length === 0) return 0;
 
     const today = toDateOnlyString(new Date());
     const pegawaiOnLeave = new Set();
 
-    props.cutiDisetujuiData.forEach((cuti) => {
+    sumber.forEach((cuti) => {
         if (cuti.status !== "disetujui") return;
 
         const tanggalMulai = toDateOnlyString(cuti.tanggal_mulai);
@@ -538,8 +566,9 @@ const filteredAnggotaTim = computed(() => {
 });
 
 const isPegawaiCutiHariIni = (pegawaiId) => {
+    const sumber = sumberCutiHariIni.value;
     if (
-        !Array.isArray(props.cutiDisetujuiData) ||
+        !Array.isArray(sumber) ||
         pegawaiId === undefined ||
         pegawaiId === null
     ) {
@@ -548,7 +577,7 @@ const isPegawaiCutiHariIni = (pegawaiId) => {
 
     const today = toDateOnlyString(new Date());
 
-    return props.cutiDisetujuiData.some((cuti) => {
+    return sumber.some((cuti) => {
         if (cuti.status !== "disetujui") return false;
 
         const cutiPegawaiId = cuti.pegawai_id ?? cuti.pegawai?.id;
@@ -888,13 +917,33 @@ const upcomingHolidays = computed(() => {
         .map(normalisasiLibur);
 });
 
+// Daftar cuti disetujui BULAN INI untuk popup. Sumber utama: prop
+// cutiDisetujuiBulanIni dari controller (sudah beririsan dengan bulan
+// berjalan & hanya pegawai di daftar anggota tim). Cadangan bila prop belum
+// ada: filter cutiDisetujuiData yang BERIRISAN dengan bulan berjalan
+// (bukan lagi berdasarkan bulan tanggal_mulai saja).
 const cutiDisetujuiBulanIniList = computed(() => {
+    if (Array.isArray(props.cutiDisetujuiBulanIni)) {
+        return props.cutiDisetujuiBulanIni;
+    }
+
     if (!props.cutiDisetujuiData) return [];
-    const currentMonth = new Date().getMonth();
-    const currentYr = new Date().getFullYear();
+
+    const sekarang = new Date();
+    const awalBulan = toDateStr(
+        new Date(sekarang.getFullYear(), sekarang.getMonth(), 1),
+    );
+    const akhirBulan = toDateStr(
+        new Date(sekarang.getFullYear(), sekarang.getMonth() + 1, 0),
+    );
+
     return props.cutiDisetujuiData.filter((cuti) => {
-        const d = new Date(cuti.tanggal_mulai);
-        return d.getMonth() === currentMonth && d.getFullYear() === currentYr;
+        if (cuti.status !== "disetujui") return false;
+        const mulai = toDateOnlyString(cuti.tanggal_mulai);
+        const selesai = toDateOnlyString(
+            cuti.tanggal_selesai || cuti.tanggal_mulai,
+        );
+        return mulai <= akhirBulan && selesai >= awalBulan;
     });
 });
 
@@ -4132,7 +4181,12 @@ const getCatatanAtasanList = (item) => {
                             <p
                                 class="text-sm font-bold text-slate-800 truncate"
                             >
-                                {{ anggota.nama }}
+                                {{ anggota.nama
+                                }}<span
+                                    v-if="isSelf(anggota.id)"
+                                    class="ml-1 text-[11px] font-semibold text-blue-600"
+                                    >(Anda)</span
+                                >
                             </p>
                             <p class="text-xs text-slate-500 mt-0.5 truncate">
                                 NIP: {{ anggota.nip || "-" }}
@@ -4261,7 +4315,17 @@ const getCatatanAtasanList = (item) => {
                         >
                             <div>
                                 <h4 class="text-sm font-bold text-slate-800">
-                                    {{ item.pegawai?.nama || "Pegawai" }}
+                                    {{ item.pegawai?.nama || "Pegawai"
+                                    }}<span
+                                        v-if="
+                                            isSelf(
+                                                item.pegawai_id ??
+                                                    item.pegawai?.id,
+                                            )
+                                        "
+                                        class="ml-1 text-[11px] font-semibold text-emerald-600"
+                                        >(Anda)</span
+                                    >
                                 </h4>
                                 <p class="text-xs text-slate-500 mt-0.5">
                                     <span class="font-bold text-slate-700">{{
@@ -4810,7 +4874,17 @@ const getCatatanAtasanList = (item) => {
                                 <p
                                     class="text-sm font-bold text-slate-800 truncate"
                                 >
-                                    {{ cuti.pegawai?.nama || "Pegawai" }}
+                                    {{ cuti.pegawai?.nama || "Pegawai"
+                                    }}<span
+                                        v-if="
+                                            isSelf(
+                                                cuti.pegawai_id ??
+                                                    cuti.pegawai?.id,
+                                            )
+                                        "
+                                        class="ml-1 text-[11px] font-semibold text-sky-600"
+                                        >(Anda)</span
+                                    >
                                 </p>
                                 <p
                                     class="text-xs text-slate-500 mt-0.5 truncate font-medium"
