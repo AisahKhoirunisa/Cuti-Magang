@@ -6,6 +6,20 @@ import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 const props = defineProps({
     riwayat: Object,
     filters: Object,
+    // ================= FILTER TAHUN =================
+    // Dikirim dari CutiController@history (App\Support\LeaveYearWindow):
+    //  - tahun_dipilih : tahun yang sedang dipakai (sudah divalidasi server)
+    //  - daftar_tahun  : pilihan dropdown, menurun (mis. 2027, 2026, 2025, 2024)
+    // Kalau backend belum mengirimnya, dropdown Tahun disembunyikan dan halaman
+    // tetap berjalan seperti sebelumnya.
+    tahun_dipilih: {
+        type: Number,
+        default: () => new Date().getFullYear(),
+    },
+    daftar_tahun: {
+        type: Array,
+        default: () => [],
+    },
     // Data saldo cuti tahunan milik pegawai yang login, dipakai untuk
     // menampilkan kartu "Rincian Sisa Cuti" di Modal Detail — hanya muncul
     // kalau jenis_cuti pengajuan yang dibuka adalah "Cuti Tahunan". Optional:
@@ -143,37 +157,46 @@ const sisaSetelahDisetujui = (item) =>
 
 // ================= FILTER =================
 // Fitur pencarian ("search berdasarkan keterangan") DIHAPUS.
-// Filter yang tersisa hanya Jenis Cuti dan Status.
+// Filter yang tersedia: Tahun, Jenis Cuti, dan Status. Ketiganya dikirim
+// bersamaan ke server; pindah halaman (pagination) membawa ketiganya lewat
+// query string dari backend (withQueryString).
 const status = ref(props.filters?.status || "");
 const jenisCutiFilter = ref(props.filters?.jenis_cuti || "");
+// Nilai awal memakai tahun yang SUDAH divalidasi server, jadi ?tahun=2019 di
+// URL tidak membuat dropdown menampilkan tahun yang tidak valid.
+const tahun = ref(props.tahun_dipilih);
 
 let timeout = null;
-watch([status, jenisCutiFilter], ([newStatus, newJenisCuti]) => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => {
-        router.get(
-            route("karyawan.riwayat"),
-            {
-                status: newStatus,
-                jenis_cuti: newJenisCuti,
-            },
-            { preserveState: true, replace: true },
-        );
-    }, 300);
-});
+watch(
+    [status, jenisCutiFilter, tahun],
+    ([newStatus, newJenisCuti, newTahun]) => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+            router.get(
+                route("karyawan.riwayat"),
+                {
+                    status: newStatus,
+                    jenis_cuti: newJenisCuti,
+                    tahun: newTahun,
+                },
+                { preserveState: true, replace: true },
+            );
+        }, 300);
+    },
+);
 
 // ================================================================
-// DROPDOWN FILTER KUSTOM (Jenis Cuti & Status)
+// DROPDOWN FILTER KUSTOM (Tahun, Jenis Cuti & Status)
 // Disamakan dengan dropdown "Jenis Cuti" di AjukanCuti.vue — tombol
 // berikon + panah, daftar SELALU terbuka ke bawah dengan lebar SAMA
 // dengan tombolnya, tinggi dibatasi (bisa di-scroll), teks panjang
 // membungkus, opsi terpilih berwarna hijau. Menutup saat klik di luar
 // (elemen tanpa atribut data-dropdown) atau menekan Esc. Hanya satu
 // dropdown yang terbuka pada satu waktu. Nilai tetap disimpan di
-// `jenisCutiFilter` dan `status`, sehingga watcher & filter backend
-// TIDAK berubah.
+// `tahun`, `jenisCutiFilter` dan `status`, sehingga watcher & filter
+// backend tetap sederhana.
 // ================================================================
-const dropdownAktif = ref(null); // 'jenis' | 'status' | null
+const dropdownAktif = ref(null); // 'tahun' | 'jenis' | 'status' | null
 
 const toggleDropdown = (nama) => {
     dropdownAktif.value = dropdownAktif.value === nama ? null : nama;
@@ -182,6 +205,16 @@ const toggleDropdown = (nama) => {
 const tutupDropdown = () => {
     dropdownAktif.value = null;
 };
+
+// Pilihan tahun dari backend (menurun). Hanya dibuat kalau backend mengirimnya.
+const opsiTahunFilter = computed(() =>
+    (props.daftar_tahun || []).map((t) => ({
+        value: Number(t),
+        label: String(t),
+    })),
+);
+
+const tahunFilterLabel = computed(() => String(tahun.value));
 
 const opsiJenisFilter = [
     { value: "", label: "Semua Jenis Cuti" },
@@ -231,14 +264,18 @@ const JENIS_LABEL_SINGKAT = {
 };
 
 const jenisFilterLabelSingkat = computed(
-    () =>
-        JENIS_LABEL_SINGKAT[jenisCutiFilter.value] ?? jenisFilterLabel.value,
+    () => JENIS_LABEL_SINGKAT[jenisCutiFilter.value] ?? jenisFilterLabel.value,
 );
 
 const statusFilterLabelSingkat = computed(() =>
     status.value ? statusFilterLabel.value : "Semua Status",
 );
 // ================= END LABEL SINGKAT FILTER =================
+
+const pilihTahunFilter = (opt) => {
+    tahun.value = opt.value;
+    tutupDropdown();
+};
 
 const pilihJenisFilter = (opt) => {
     jenisCutiFilter.value = opt.value;
@@ -1070,13 +1107,100 @@ const sortedRiwayatData = computed(() => {
                     </p>
                 </div>
 
-                <!-- ================= FILTER: Jenis Cuti & Status (DROPDOWN KUSTOM) =================
+                <!-- ================= FILTER: Tahun, Jenis Cuti & Status (DROPDOWN KUSTOM) =================
                      Gaya sama dengan dropdown "Jenis Cuti" di AjukanCuti.vue.
-                     Di HP: dua kolom sejajar (kiri-kanan) supaya hemat tinggi layar, dengan
-                     teks tombol dipersingkat. Di layar >= sm: berjajar dengan lebar tetap. -->
+                     Di HP: Tahun satu baris penuh di atas, lalu Jenis Cuti & Status sejajar
+                     (kiri-kanan) dengan teks tombol dipersingkat. Di layar >= sm: ketiganya
+                     berjajar dengan lebar tetap. -->
                 <div
                     class="grid grid-cols-2 gap-2 sm:flex sm:flex-row sm:items-center sm:gap-3 w-full md:w-auto"
                 >
+                    <!-- Dropdown Tahun (jendela 2 tahun ke belakang, 1 ke depan) -->
+                    <div
+                        v-if="opsiTahunFilter.length"
+                        data-dropdown
+                        class="relative col-span-2 w-full min-w-0 sm:col-span-1 sm:w-32"
+                        @keydown.esc="tutupDropdown"
+                    >
+                        <div
+                            class="absolute inset-y-0 left-0 pl-2.5 sm:pl-3 flex items-center pointer-events-none"
+                        >
+                            <svg
+                                class="w-4 h-4 text-gray-400"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                />
+                            </svg>
+                        </div>
+
+                        <button
+                            id="filter_tahun"
+                            type="button"
+                            aria-label="Filter tahun"
+                            aria-haspopup="listbox"
+                            :aria-expanded="dropdownAktif === 'tahun'"
+                            :title="'Tahun ' + tahunFilterLabel"
+                            @click="toggleDropdown('tahun')"
+                            class="w-full min-h-[44px] text-left text-[13px] sm:text-sm border border-gray-300 bg-white cursor-pointer rounded-lg shadow-sm text-gray-600 py-2 pl-8 pr-7 sm:pl-9 sm:pr-8 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                        >
+                            <span class="block truncate">{{
+                                tahunFilterLabel
+                            }}</span>
+                        </button>
+
+                        <span
+                            class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
+                        >
+                            <svg
+                                class="w-3.5 h-3.5 text-gray-500 transition-transform"
+                                :class="{
+                                    'rotate-180': dropdownAktif === 'tahun',
+                                }"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
+                            </svg>
+                        </span>
+
+                        <ul
+                            v-if="dropdownAktif === 'tahun'"
+                            role="listbox"
+                            class="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                        >
+                            <li v-for="opt in opsiTahunFilter" :key="opt.value">
+                                <button
+                                    type="button"
+                                    role="option"
+                                    :title="opt.label"
+                                    :aria-selected="tahun === opt.value"
+                                    @click="pilihTahunFilter(opt)"
+                                    :class="
+                                        tahun === opt.value
+                                            ? 'bg-emerald-50 text-emerald-700 font-semibold cursor-pointer'
+                                            : 'text-gray-700 hover:bg-gray-50 cursor-pointer'
+                                    "
+                                    class="block w-full whitespace-normal break-words leading-tight px-3 py-2 text-left text-sm"
+                                >
+                                    {{ opt.label }}
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
+
                     <!-- Dropdown Jenis Cuti -->
                     <div
                         data-dropdown
@@ -1801,12 +1925,8 @@ const sortedRiwayatData = computed(() => {
                 >
                     <!-- DETAIL UMUM PEGAWAI (hanya untuk role selain staf) -->
                     <template v-if="currentUser?.role_id !== 1">
-                        <div
-                            class="grid grid-cols-12 gap-2 text-sm"
-                        >
-                            <div
-                                class="col-span-4 text-slate-500 font-medium"
-                            >
+                        <div class="grid grid-cols-12 gap-2 text-sm">
+                            <div class="col-span-4 text-slate-500 font-medium">
                                 Nama Pegawai
                             </div>
                             <div
@@ -1819,17 +1939,11 @@ const sortedRiwayatData = computed(() => {
                                 }}
                             </div>
                         </div>
-                        <div
-                            class="grid grid-cols-12 gap-2 text-sm"
-                        >
-                            <div
-                                class="col-span-4 text-slate-500 font-medium"
-                            >
+                        <div class="grid grid-cols-12 gap-2 text-sm">
+                            <div class="col-span-4 text-slate-500 font-medium">
                                 NIP
                             </div>
-                            <div
-                                class="col-span-8 text-slate-700 font-medium"
-                            >
+                            <div class="col-span-8 text-slate-700 font-medium">
                                 {{
                                     selectedDetail.pegawai?.nip ??
                                     currentUser?.nip ??
@@ -1837,12 +1951,8 @@ const sortedRiwayatData = computed(() => {
                                 }}
                             </div>
                         </div>
-                        <div
-                            class="grid grid-cols-12 gap-2 text-sm"
-                        >
-                            <div
-                                class="col-span-4 text-slate-500 font-medium"
-                            >
+                        <div class="grid grid-cols-12 gap-2 text-sm">
+                            <div class="col-span-4 text-slate-500 font-medium">
                                 Jabatan
                             </div>
                             <div
@@ -1855,12 +1965,8 @@ const sortedRiwayatData = computed(() => {
                                 }}
                             </div>
                         </div>
-                        <div
-                            class="grid grid-cols-12 gap-2 text-sm"
-                        >
-                            <div
-                                class="col-span-4 text-slate-500 font-medium"
-                            >
+                        <div class="grid grid-cols-12 gap-2 text-sm">
+                            <div class="col-span-4 text-slate-500 font-medium">
                                 Kelompok Substansi
                             </div>
                             <div
@@ -1877,17 +1983,11 @@ const sortedRiwayatData = computed(() => {
                     </template>
 
                     <!-- DETAIL PENGAJUAN -->
-                    <div
-                        class="grid grid-cols-12 gap-2 text-sm"
-                    >
-                        <div
-                            class="col-span-4 text-slate-500 font-medium"
-                        >
+                    <div class="grid grid-cols-12 gap-2 text-sm">
+                        <div class="col-span-4 text-slate-500 font-medium">
                             Jenis Cuti
                         </div>
-                        <div
-                            class="col-span-8 font-semibold text-indigo-600"
-                        >
+                        <div class="col-span-8 font-semibold text-indigo-600">
                             {{ selectedDetail.jenis_cuti ?? "Cuti Tahunan" }}
                         </div>
                     </div>
@@ -1902,9 +2002,7 @@ const sortedRiwayatData = computed(() => {
                         "
                         class="grid grid-cols-12 gap-2 text-sm"
                     >
-                        <div
-                            class="col-span-4 text-slate-500 font-medium"
-                        >
+                        <div class="col-span-4 text-slate-500 font-medium">
                             Anak ke berapa
                         </div>
                         <div class="col-span-8 text-slate-800 font-semibold">
@@ -1917,9 +2015,7 @@ const sortedRiwayatData = computed(() => {
                         v-if="isJenisCutiTahunan(selectedDetail.jenis_cuti)"
                         class="grid grid-cols-12 gap-2 items-start bg-amber-50 border border-amber-200 border-l-4 border-l-amber-400 rounded-lg px-3 py-2.5 text-sm"
                     >
-                        <div
-                            class="col-span-4 text-amber-700 font-semibold"
-                        >
+                        <div class="col-span-4 text-amber-700 font-semibold">
                             Rincian Sisa Cuti
                         </div>
                         <div class="col-span-8">
@@ -1931,7 +2027,10 @@ const sortedRiwayatData = computed(() => {
                             >
                                 {{ rincianSisaCuti().tahunIni }} sisa tahun ini
                                 + {{ rincianSisaCuti().saldoBawaan }} bawaan +
-                                {{ rincianSisaCuti().dikembalikan }} dikembalikan
+                                {{
+                                    rincianSisaCuti().dikembalikan
+                                }}
+                                dikembalikan
                             </span>
                             <span
                                 v-if="isMenungguTahunan(selectedDetail)"
@@ -1946,12 +2045,8 @@ const sortedRiwayatData = computed(() => {
                         </div>
                     </div>
 
-                    <div
-                        class="grid grid-cols-12 gap-2 text-sm"
-                    >
-                        <div
-                            class="col-span-4 text-slate-500 font-medium"
-                        >
+                    <div class="grid grid-cols-12 gap-2 text-sm">
+                        <div class="col-span-4 text-slate-500 font-medium">
                             Waktu Cuti
                         </div>
                         <div class="col-span-8 text-slate-800 font-semibold">
@@ -1961,12 +2056,8 @@ const sortedRiwayatData = computed(() => {
                         </div>
                     </div>
 
-                    <div
-                        class="grid grid-cols-12 gap-2 text-sm"
-                    >
-                        <div
-                            class="col-span-4 text-slate-500 font-medium"
-                        >
+                    <div class="grid grid-cols-12 gap-2 text-sm">
+                        <div class="col-span-4 text-slate-500 font-medium">
                             Alasan
                         </div>
                         <div
@@ -1976,12 +2067,8 @@ const sortedRiwayatData = computed(() => {
                         </div>
                     </div>
 
-                    <div
-                        class="grid grid-cols-12 gap-2 text-sm"
-                    >
-                        <div
-                            class="col-span-4 text-slate-500 font-medium"
-                        >
+                    <div class="grid grid-cols-12 gap-2 text-sm">
+                        <div class="col-span-4 text-slate-500 font-medium">
                             Alamat
                         </div>
                         <div
@@ -1995,12 +2082,8 @@ const sortedRiwayatData = computed(() => {
                         </div>
                     </div>
 
-                    <div
-                        class="grid grid-cols-12 gap-2 text-sm"
-                    >
-                        <div
-                            class="col-span-4 text-slate-500 font-medium"
-                        >
+                    <div class="grid grid-cols-12 gap-2 text-sm">
+                        <div class="col-span-4 text-slate-500 font-medium">
                             Nomor Telepon
                         </div>
                         <div class="col-span-8 text-slate-800 font-semibold">
@@ -2025,9 +2108,7 @@ const sortedRiwayatData = computed(() => {
                     <div
                         class="grid grid-cols-12 gap-2 items-center text-sm pt-1"
                     >
-                        <div
-                            class="col-span-4 text-slate-500 font-medium"
-                        >
+                        <div class="col-span-4 text-slate-500 font-medium">
                             Lampiran
                         </div>
                         <div class="col-span-8">

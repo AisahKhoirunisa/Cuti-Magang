@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\CutiDitangguhkan;
+use App\Models\KoreksiCutiBulanan;
 use App\Models\LogPerubahanSaldo;
 use App\Models\Notifikasi;
 use App\Models\Pegawai;
@@ -13,7 +14,6 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -24,6 +24,24 @@ use PhpOffice\PhpSpreadsheet\Style\Conditional;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+
+// ================= PERUBAHAN (TERPAKAI DIKUNCI, EDIT DI REKAP LAPORAN) =================
+// "Cuti Terpakai" di halaman ini sekarang HANYA TAMPIL (read-only). Angkanya
+// diedit per bulan di Rekap Laporan (tabel koreksi_cuti_bulanan), sehingga
+// selalu jelas koreksinya jatuh di bulan mana.
+//
+//   - hitungKuota()  : bila pegawai punya koreksi bulanan di tahun itu, Terpakai
+//                      memakai SaldoCuti::terpakaiEfektif() (satu rumus dengan
+//                      Rekap Laporan). Bila tidak, perilaku lama (koreksi_saldo
+//                      tahunan / hitungan sistem).
+//   - updateSaldo()  : TIDAK lagi menerima koreksi_saldo / pakai_sistem dan tidak
+//                      menyentuh kolom koreksi_*. Hak, Sisa N-1, Sisa N-2, dan
+//                      Tgh tetap bisa diedit di sini.
+//   - Field baru ke Vue: 'ada_koreksi_bulanan', 'koreksi_bulanan' (bulan => nilai),
+//                      'terpakai_dikunci' (selalu true).
+//   - kirimNotifikasiPerubahanSaldo() dibuat public supaya AdminController bisa
+//                      memakainya setelah koreksi bulanan disimpan.
+// ================= END PERUBAHAN =================
 
 class RekapKuotaDetailController extends Controller
 {
@@ -87,6 +105,10 @@ class RekapKuotaDetailController extends Controller
 
     // Cache nama approver supaya tidak query berulang
     private array $approverNameCache = [];
+
+    // Cache koreksi bulanan per tahun: [tahun => [pegawai_id => [bulan => nilai]]].
+    // Dimuat SEKALI per tahun (satu query), supaya hitungKuota() tidak N+1.
+    private array $cacheKoreksiBulanan = [];
     // ================= END RANTAI APPROVAL =================
 
     // ================= HELPER: FILTER TAHUN =================
@@ -218,11 +240,18 @@ class RekapKuotaDetailController extends Controller
                 'saldoCuti' => function ($q) use ($tahunIni) {
                     $q->whereIn('tahun', [$tahunIni, $tahunIni - 1]);
                 },
-                'pengajuanCuti' => function ($q) use ($muatApprovalLogs) {
+                'pengajuanCuti' => function ($q) use ($muatApprovalLogs, $tahunIni) {
                     if ($muatApprovalLogs) {
                         $q->with('approvalLogs.approver:id,nama,jabatan');
                     }
-                    $q->latest();
+                    // Hanya pengajuan yang bersinggungan dengan tahun yang dilihat.
+                    // Cuti lintas tahun (31 Des 2026 - 4 Jan 2027) tampil di 2026 dan 2027.
+                    $q->whereDate('tanggal_mulai', '<=', "{$tahunIni}-12-31")
+                        ->where(function ($w) use ($tahunIni) {
+                            $w->whereDate('tanggal_selesai', '>=', "{$tahunIni}-01-01")
+                                ->orWhereNull('tanggal_selesai');
+                        })
+                        ->latest();
                 },
                 'cutiDitangguhkan' => function ($q) use ($tahunIni) {
                     $q->whereIn('tahun_asal', [$tahunIni - 2, $tahunIni - 1, $tahunIni]);
@@ -429,14 +458,30 @@ class RekapKuotaDetailController extends Controller
     // ================= END HELPER RANTAI APPROVAL =================
 
     // ================= HELPER: HITUNG CUTI TERPAKAI =================
-    // KONSEP KOREKSI SALDO (INPUT LANGSUNG / OVERRIDE):
-    //   - koreksi_saldo = NULL   -> Terpakai Efektif = Terpakai Murni (ikut sistem)
-    //   - koreksi_saldo = 0..365 -> Terpakai Efektif = koreksi_saldo (angka Admin HR
-    //                               dipakai apa adanya, TERMASUK 0)
+    // URUTAN PRIORITAS TERPAKAI EFEKTIF (satu aturan dengan SaldoCuti::terpakaiEfektif):
+    //   1) Ada koreksi BULANAN (Rekap Laporan) di tahun itu -> SaldoCuti::terpakaiEfektif()
+    //   2) koreksi_saldo (tahunan, data lama) terisi -> dipakai apa adanya (termasuk 0)
+    //   3) Selain itu -> ikut hitungan sistem (terpakai murni)
     //
     // PENTING: bedakan NULL dan 0. Jangan pakai empty(), '?:', atau '> 0'
-    // untuk mengecek koreksi, karena 0 adalah koreksi yang SAH ("tidak ada
-    // cuti yang benar-benar terpakai"). Cukup cek '!== null'.
+    // untuk mengecek koreksi, karena 0 adalah koreksi yang SAH. Cukup cek '!== null'.
+
+    /**
+     * Peta koreksi bulanan satu pegawai & tahun: [bulan (1-12) => nilai].
+     * Kosong = tidak ada koreksi bulanan. Satu query per tahun per request.
+     */
+    private function petaKoreksiBulanan(int $pegawaiId, int $tahun): array
+    {
+        if (!isset($this->cacheKoreksiBulanan[$tahun])) {
+            $this->cacheKoreksiBulanan[$tahun] = KoreksiCutiBulanan::where('tahun', $tahun)
+                ->get(['pegawai_id', 'bulan', 'nilai'])
+                ->groupBy('pegawai_id')
+                ->map(fn($baris) => $baris->pluck('nilai', 'bulan')->map(fn($v) => (int) $v)->all())
+                ->all();
+        }
+
+        return $this->cacheKoreksiBulanan[$tahun][$pegawaiId] ?? [];
+    }
 
     /**
      * Versi MEMORI: dari relasi pengajuanCuti yang sudah di-eager load.
@@ -485,9 +530,10 @@ class RekapKuotaDetailController extends Controller
 
     // ================= HELPER: NOTIFIKASI PERUBAHAN SALDO =================
     // Dipanggil dari updateSaldo() dan importKuota() setelah data saldo
-    // tersimpan. Mengirim notifikasi ke PEGAWAI yang saldonya diubah Admin HR,
-    // memakai pola yang sama dengan MonitoringCutiController (model Notifikasi:
-    // pegawai_id, judul, pesan, tautan, is_read).
+    // tersimpan, dan dari AdminController setelah koreksi bulanan disimpan
+    // (karena itu PUBLIC). Mengirim notifikasi ke PEGAWAI yang saldonya diubah
+    // Admin HR, memakai pola yang sama dengan MonitoringCutiController (model
+    // Notifikasi: pegawai_id, judul, pesan, tautan, is_read).
     //
     // Notifikasi HANYA dikirim kalau ada nilai yang benar-benar berubah,
     // supaya pegawai tidak menerima notifikasi kosong ketika Admin HR
@@ -496,10 +542,12 @@ class RekapKuotaDetailController extends Controller
     // $lama & $baru berisi kunci: hak, carry, dua_tahun_lalu, koreksi, terpakai
     // ('koreksi' bernilai int atau null; null = ikut sistem. 'terpakai' adalah
     // cuti terpakai EFEKTIF yang dilihat pegawai, dan itulah yang dibandingkan).
+    // Untuk koreksi bulanan, isi 'koreksi' dengan nilai non-null bila ada koreksi
+    // yang aktif (dipakai hanya untuk pilihan kalimat di pesan).
     //
     // Perubahan Tgh (ditangguhkan) SENGAJA tidak ikut notifikasi: angkanya
     // belum dicatat di sini (Tgh tahun ini kini memotong saldo, tetapi angka saldo di pesan sudah memakainya).
-    private function kirimNotifikasiPerubahanSaldo(
+    public function kirimNotifikasiPerubahanSaldo(
         Pegawai $pegawai,
         int $tahunIni,
         array $lama,
@@ -584,7 +632,7 @@ class RekapKuotaDetailController extends Controller
     //             (dikurangi, atau dihapus kalau jadi 0).
     // Pengaruh Tgh ke saldo diatur oleh TGH_MASUK_TOTAL (Tgh N-1 masuk Total
     // Tersedia) dan TGH_TAHUN_INI_MENGURANGI_SISA (Tgh N mengurangi Sisa & Saldo Akhir).
-    private function setTotalDitangguhkan(int $pegawaiId, int $tahunAsal, int $target): void
+    public function setTotalDitangguhkan(int $pegawaiId, int $tahunAsal, int $target): void
     {
         $target = max(0, $target);
 
@@ -645,12 +693,13 @@ class RekapKuotaDetailController extends Controller
 
     /**
      * Update saldo cuti perorangan (hanya Admin HR / role_id 5).
-     * Menerima 'tahun' (dari Filter Tahun), 'pakai_sistem', 'koreksi_saldo',
-     * serta total Tgh (sisa_ditangguhkan_*) yang bersifat opsional.
+     * Menerima 'tahun' (dari Filter Tahun), Hak, Sisa N-1, Sisa N-2, serta
+     * total Tgh (sisa_ditangguhkan_*) yang bersifat opsional.
      *
-     *   - pakai_sistem = true  -> koreksi_saldo disimpan NULL (ikut angka sistem)
-     *   - pakai_sistem = false -> koreksi_saldo WAJIB diisi (boleh 0) dan dipakai
-     *                             apa adanya sebagai total cuti terpakai
+     * [TERPAKAI DIKUNCI] 'Cuti Terpakai' TIDAK bisa diubah dari sini. Angkanya
+     * diedit per bulan di Rekap Laporan. Field lama 'pakai_sistem' dan
+     * 'koreksi_saldo' kalau masih dikirim frontend lama DIABAIKAN, dan kolom
+     * koreksi_* tidak disentuh.
      *
      * Setelah tersimpan, pegawai yang bersangkutan otomatis menerima
      * notifikasi berisi ringkasan perubahan (hanya jika ada yang berubah).
@@ -664,69 +713,17 @@ class RekapKuotaDetailController extends Controller
             'carry_forward_normal' => ['required', 'integer', 'min:0'],
             'sisa_cuti_dua_tahun_lalu' => ['required', 'integer', 'min:0'],
             'tahun' => ['nullable', 'integer', 'between:2000,2100'],
-            'pakai_sistem' => ['required', 'boolean'],
             // Tgh. Opsional: hanya diproses kalau dikirim.
             'sisa_ditangguhkan_dua_tahun_lalu' => ['nullable', 'integer', 'between:0,365'],
             'sisa_ditangguhkan_tahun_lalu' => ['nullable', 'integer', 'between:0,365'],
             'sisa_ditangguhkan_tahun_ini' => ['nullable', 'integer', 'between:0,365'],
             // Alasan perubahan (dicatat di log; wajib bila WAJIB_ALASAN_KOREKSI aktif)
             'alasan' => ['nullable', 'string', 'max:500'],
-            'koreksi_saldo' => [
-                // 'bail': berhenti di aturan pertama yang gagal, supaya aturan
-                // kustom di bawah hanya jalan kalau angkanya sudah valid.
-                'bail',
-                Rule::requiredIf(fn() => !$request->boolean('pakai_sistem')),
-                'nullable',
-                'integer',
-                'between:0,365',
-                // Cuti terpakai tidak boleh melebihi TOTAL HAK TERSEDIA pegawai
-                // (Hak tahun ini + Saldo Bawaan Eligible [+ Tgh N-1]). Batas dihitung dari
-                // isian form yang sedang dikirim, dengan rumus yang SAMA seperti
-                // hitungKuota(), notifikasi, dan frontend (SaldoCuti::hitungBawaan).
-                function ($attribute, $value, $fail) use ($request) {
-                    // Dilewati kalau Admin HR memilih "Gunakan data dari sistem"
-                    // (angka sistem tidak diketik manual) atau kotak kosong.
-                    if ($request->boolean('pakai_sistem') || $value === null) {
-                        return;
-                    }
-
-                    $hak = (int) $request->input('hak_tahun_ini', 0);
-                    $carry = (int) $request->input('carry_forward_normal', 0);
-                    $duaTahunLalu = (int) $request->input('sisa_cuti_dua_tahun_lalu', 0);
-
-                    $bawaanEligible = SaldoCuti::hitungBawaan($duaTahunLalu, $carry, $hak);
-                    $maksimal = $hak + $bawaanEligible;
-
-                    // Hanya Tgh tahun asal (tahun - 1) yang ikut total: pakai angka dari
-                    // form kalau dikirim, jika tidak pakai total tersimpan di database.
-                    if (self::TGH_MASUK_TOTAL) {
-                        $tahunForm = $this->resolveTahun($request);
-                        $kiriman = $request->input('sisa_ditangguhkan_tahun_lalu');
-                        $tghTotal = ($kiriman !== null && $kiriman !== '')
-                            ? (int) $kiriman
-                            : (int) CutiDitangguhkan::where('pegawai_id', (int) $request->route('id'))
-                                ->where('tahun_asal', $tahunForm - 1)
-                                ->sum('jumlah_hari');
-                        $maksimal += $tghTotal;
-                    }
-
-                    if ((int) $value > $maksimal) {
-                        $fail("Gagal menyimpan. Cuti terpakai ({$value} hari) melebihi total hak yang tersedia ({$maksimal} hari).");
-                    }
-                },
-            ],
-        ], [
-            'koreksi_saldo.required' => 'Isi angka cuti terpakai (boleh 0), atau kembalikan ke angka sistem.',
         ]);
 
         $pegawai = Pegawai::findOrFail($id);
         $tahunIni = $this->resolveTahun($request);
         $tahunLalu = $tahunIni - 1;
-
-        // NULL = ikut sistem, angka (termasuk 0) = koreksi manual Admin HR.
-        $koreksiSaldo = $request->boolean('pakai_sistem')
-            ? null
-            : (int) $data['koreksi_saldo'];
 
         // Ambil snapshot nilai LAMA sebelum di-update, untuk mendeteksi
         // apa saja yang berubah (dipakai membuat isi notifikasi).
@@ -738,37 +735,34 @@ class RekapKuotaDetailController extends Controller
             ->where('tahun', $tahunLalu)
             ->first();
 
-        $cutiTerpakaiMurni = $this->hitungCutiTerpakaiMurni($pegawai->id, $tahunIni);
+        // Terpakai EFEKTIF (ikut koreksi bulanan / koreksi tahunan lama). Tidak
+        // diubah oleh method ini, jadi nilai lama = nilai baru.
+        $cutiTerpakai = SaldoCuti::terpakaiEfektif((int) $pegawai->id, $tahunIni, $saldoTahunIniLama);
 
         $koreksiLama = ($saldoTahunIniLama && $saldoTahunIniLama->koreksi_saldo !== null)
             ? (int) $saldoTahunIniLama->koreksi_saldo
             : null;
 
-        // 'terpakai' = cuti terpakai EFEKTIF, yaitu angka yang benar-benar
-        // dilihat pegawai di dashboard. Notifikasi hanya dikirim kalau angka ini
-        // berubah, bukan sekadar karena kolom koreksi berganti dari NULL ke angka
-        // yang nilainya sama dengan hitungan sistem.
         $lama = [
             'hak'            => (int) ($saldoTahunIniLama->kuota_tahunan ?? 12),
             'carry'          => (int) ($saldoTahunIniLama->carry_forward_normal ?? 0),
             'dua_tahun_lalu' => (int) ($saldoTahunLalu->carry_forward_normal ?? 0),
             'koreksi'        => $koreksiLama,
-            'terpakai'       => $this->hitungCutiTerpakaiEfektif($cutiTerpakaiMurni, $koreksiLama),
+            'terpakai'       => $cutiTerpakai,
         ];
-
-        $cutiTerpakai = $this->hitungCutiTerpakaiEfektif($cutiTerpakaiMurni, $koreksiSaldo);
 
         $baru = [
             'hak'            => (int) $data['hak_tahun_ini'],
             'carry'          => (int) $data['carry_forward_normal'],
             'dua_tahun_lalu' => (int) $data['sisa_cuti_dua_tahun_lalu'],
-            'koreksi'        => $koreksiSaldo,
+            'koreksi'        => $koreksiLama,
             'terpakai'       => $cutiTerpakai,
         ];
 
         // ---- Deteksi perubahan (dasar alasan wajib & log) ----
-        // Dihitung SEBELUM ada yang ditulis ke database. 'terpakai' adalah angka
-        // efektif yang dilihat pegawai; Tgh dibandingkan dengan total tersimpan.
+        // Dihitung SEBELUM ada yang ditulis ke database. Tgh dibandingkan dengan
+        // total tersimpan. 'terpakai' tidak dicatat di sini karena tidak diubah
+        // dari halaman ini.
         $daftarPerubahan = [];
         $catatPerubahan = function (string $kolom, $nilaiLama, $nilaiBaru) use (&$daftarPerubahan) {
             if ((int) $nilaiLama !== (int) $nilaiBaru) {
@@ -783,7 +777,6 @@ class RekapKuotaDetailController extends Controller
         $catatPerubahan('hak', $lama['hak'], $baru['hak']);
         $catatPerubahan('sisa_n1', $lama['carry'], $baru['carry']);
         $catatPerubahan('sisa_n2', $lama['dua_tahun_lalu'], $baru['dua_tahun_lalu']);
-        $catatPerubahan('terpakai', $lama['terpakai'], $baru['terpakai']);
 
         foreach ([
             'tgh_n2' => ['sisa_ditangguhkan_dua_tahun_lalu', $tahunIni - 2],
@@ -806,38 +799,15 @@ class RekapKuotaDetailController extends Controller
             ]);
         }
 
+        // koreksi_saldo & kolom koreksi_* SENGAJA tidak ada di daftar ini.
         SaldoCuti::updateOrCreate(
             ['pegawai_id' => $pegawai->id, 'tahun' => $tahunIni],
             [
                 'kuota_tahunan' => $data['hak_tahun_ini'],
                 'carry_forward_normal' => $data['carry_forward_normal'],
-                'koreksi_saldo' => $koreksiSaldo,
                 'sisa' => max(0, $data['hak_tahun_ini'] - $cutiTerpakai),
             ]
         );
-
-        // Jejak koreksi Terpakai. Ditulis lewat query langsung supaya tidak
-        // bergantung pada $fillable model SaldoCuti.
-        //   - Kembali ke angka sistem : jejak dihapus.
-        //   - Koreksi baru / angka koreksi berubah : jejak dibuat ulang, termasuk
-        //     angka sistem SAAT INI (dasar penanda "koreksi basi").
-        //   - Koreksi tidak berubah : jejak lama dibiarkan.
-        $kunciSaldoIni = ['pegawai_id' => $pegawai->id, 'tahun' => $tahunIni];
-        if ($koreksiSaldo === null) {
-            DB::table('saldo_cutis')->where($kunciSaldoIni)->update([
-                'koreksi_alasan' => null,
-                'koreksi_terpakai_sistem' => null,
-                'koreksi_oleh' => null,
-                'koreksi_pada' => null,
-            ]);
-        } elseif ($koreksiSaldo !== $koreksiLama) {
-            DB::table('saldo_cutis')->where($kunciSaldoIni)->update([
-                'koreksi_alasan' => $alasan !== '' ? $alasan : null,
-                'koreksi_terpakai_sistem' => $cutiTerpakaiMurni,
-                'koreksi_oleh' => $request->user()->id,
-                'koreksi_pada' => now(),
-            ]);
-        }
 
         // [FIX] Baris tahun lalu yang BELUM ada dibuat sebagai baris bayangan
         // (kuota_tahunan = 0), bukan 12. Kalau 12, baris itu dianggap "dompet
@@ -890,7 +860,7 @@ class RekapKuotaDetailController extends Controller
     //   Sisa {tahun-2} -> carry_forward_normal tahun-1
     //   Sisa {tahun-1} -> carry_forward_normal tahun berjalan
     //   Hak {tahun}    -> kuota_tahunan
-    // Kolom hasil hitungan diabaikan; koreksi_saldo TIDAK disentuh.
+    // Kolom hasil hitungan diabaikan; koreksi_saldo & koreksi bulanan TIDAK disentuh.
     // Sel kosong = nilai lama dipertahankan.
     // Pencocokan memakai NIP seluruh pegawai non-Admin HR (termasuk yang sudah
     // non-aktif), supaya saldo arsip tahun-tahun lalu tetap bisa dikoreksi.
@@ -1117,10 +1087,10 @@ class RekapKuotaDetailController extends Controller
                 $koreksiLama = ($saldoIni && $saldoIni->koreksi_saldo !== null)
                     ? (int) $saldoIni->koreksi_saldo
                     : null;
-                $terpakai = $this->hitungCutiTerpakaiEfektif(
-                    $this->hitungCutiTerpakaiMurni($pegawai->id, $tahunIni),
-                    $koreksiLama
-                );
+
+                // Terpakai EFEKTIF (ikut koreksi bulanan bila ada), satu rumus
+                // dengan Rekap Laporan.
+                $terpakai = SaldoCuti::terpakaiEfektif((int) $pegawai->id, $tahunIni, $saldoIni);
 
                 $lama = [
                     'hak'            => (int) ($saldoIni->kuota_tahunan ?? 12),
@@ -1201,7 +1171,7 @@ class RekapKuotaDetailController extends Controller
         $kuotaTahunan = (int) ($saldo->kuota_tahunan ?? 12);
         $carryForward = (int) ($saldo->carry_forward_normal ?? 0);
 
-        // NULL = ikut sistem, angka (termasuk 0) = koreksi manual Admin HR.
+        // NULL = ikut sistem, angka (termasuk 0) = koreksi tahunan lama Admin HR.
         $koreksiRaw = $saldo?->koreksi_saldo;
         $koreksiSaldo = $koreksiRaw === null ? null : max(0, (int) $koreksiRaw);
 
@@ -1221,7 +1191,15 @@ class RekapKuotaDetailController extends Controller
         }
 
         $cutiTerpakaiMurni = $this->hitungCutiTerpakaiMurniDariRelasi($pegawai, $tahunIni);
-        $cutiTerpakai = $this->hitungCutiTerpakaiEfektif($cutiTerpakaiMurni, $koreksiSaldo);
+
+        // [KOREKSI BULANAN] Bila ada, Terpakai mengikuti jumlah bulanan hasil edit
+        // di Rekap Laporan (SaldoCuti::terpakaiEfektif). Bila tidak, aturan lama.
+        $petaKoreksiBulanan = $this->petaKoreksiBulanan((int) $pegawai->id, $tahunIni);
+        $adaKoreksiBulanan = !empty($petaKoreksiBulanan);
+
+        $cutiTerpakai = $adaKoreksiBulanan
+            ? SaldoCuti::terpakaiEfektif((int) $pegawai->id, $tahunIni, $saldo)
+            : $this->hitungCutiTerpakaiEfektif($cutiTerpakaiMurni, $koreksiSaldo);
 
         // (Sisa Kuota Tahun Ini dihitung di bawah, setelah Tgh tahun ini tersedia)
         $sisaDuaTahunLalu = (int) ($saldoTahunLalu?->carry_forward_normal ?? 0);
@@ -1266,11 +1244,13 @@ class RekapKuotaDetailController extends Controller
         $sisaKuotaTahunIni = max($kuotaTahunan - $cutiTerpakai - $potonganTghTahunIni, 0);
         $saldoAkhir = max($totalCutiTersedia - $cutiTerpakai - $potonganTghTahunIni, 0);
 
-        // Info audit koreksi. 'koreksi_basi' = ada koreksi, tetapi angka sistem
-        // sekarang berbeda dari angka sistem saat koreksi dibuat (mis. ada cuti
-        // baru disetujui/dibatalkan sesudahnya), jadi koreksi perlu dicek ulang.
+        // Info audit koreksi tahunan (data lama). 'koreksi_basi' = ada koreksi,
+        // tetapi angka sistem sekarang berbeda dari angka sistem saat koreksi dibuat
+        // (mis. ada cuti baru disetujui/dibatalkan sesudahnya), jadi koreksi perlu
+        // dicek ulang. Tidak berlaku bila koreksi bulanan sudah dipakai.
         $sistemSaatKoreksi = $saldo?->koreksi_terpakai_sistem;
-        $koreksiBasi = $koreksiSaldo !== null
+        $koreksiBasi = !$adaKoreksiBulanan
+            && $koreksiSaldo !== null
             && $sistemSaatKoreksi !== null
             && (int) $sistemSaatKoreksi !== $cutiTerpakaiMurni;
 
@@ -1347,12 +1327,19 @@ class RekapKuotaDetailController extends Controller
             'sisa_ditangguhkan_tahun_ini' => $sisaDitangguhkanTahunIni,
             'potongan_tgh_tahun_ini' => $potonganTghTahunIni,
 
-            // Koreksi (untuk edit inline di Vue)
-            // koreksi_saldo: null = ikut sistem, angka (termasuk 0) = koreksi manual
+            // Koreksi
+            // [TERPAKAI DIKUNCI] 'terpakai_dikunci' selalu true: Vue menampilkan
+            // Terpakai sebagai teks (tanpa input) dan menunjuk Admin HR ke Rekap
+            // Laporan untuk mengubahnya.
+            // koreksi_saldo: koreksi tahunan LAMA (null = tidak ada), hanya info.
+            // koreksi_bulanan: [bulan => nilai] hasil edit Rekap Laporan.
+            'terpakai_dikunci' => true,
             'cuti_terpakai_murni' => $cutiTerpakaiMurni,
             'cuti_terpakai_sistem' => $cutiTerpakaiMurni,
             'koreksi_saldo' => $koreksiSaldo,
-            'ada_koreksi' => $koreksiSaldo !== null,
+            'ada_koreksi_bulanan' => $adaKoreksiBulanan,
+            'koreksi_bulanan' => $petaKoreksiBulanan,
+            'ada_koreksi' => $koreksiSaldo !== null || $adaKoreksiBulanan,
             'koreksi_alasan' => $koreksiSaldo !== null ? $saldo?->koreksi_alasan : null,
             'koreksi_pada' => $koreksiSaldo !== null ? $saldo?->koreksi_pada : null,
             'koreksi_terpakai_sistem_saat_koreksi' => $koreksiSaldo !== null ? $sistemSaatKoreksi : null,
@@ -1630,8 +1617,8 @@ class RekapKuotaDetailController extends Controller
                 ? "Rumus: Hak + Saldo Bawaan Eligible + Sisa Ditangguhkan {$tahunLalu}."
                 : 'Rumus: Hak + Saldo Bawaan Eligible.',
             'M' => self::TGH_TAHUN_INI_MENGURANGI_SISA
-                ? "Terpakai = cuti yang digunakan + Sisa Ditangguhkan {$tahunIni} (sama dengan tampilan di web)."
-                : 'Terpakai = cuti yang digunakan.',
+                ? "Terpakai = cuti yang digunakan (sudah ikut koreksi bulanan Rekap Laporan) + Sisa Ditangguhkan {$tahunIni} (sama dengan tampilan di web)."
+                : 'Terpakai = cuti yang digunakan (sudah ikut koreksi bulanan Rekap Laporan).',
             'N' => self::TGH_TAHUN_INI_MENGURANGI_SISA
                 ? "Rumus: Total Hak Tersedia - Terpakai (minimal 0). Terpakai sudah termasuk Sisa Ditangguhkan {$tahunIni}."
                 : 'Rumus: Total Hak Tersedia - Terpakai (minimal 0).',

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\PengajuanCuti;
 use App\Models\SaldoCuti;
+use App\Models\CutiDitangguhkan;
 use App\Models\Notifikasi;
 use App\Models\Pegawai;
 use App\Models\ApprovalLog;
@@ -29,11 +30,12 @@ use Illuminate\Support\Facades\DB;
 // ================= END CATATAN PENGGABUNGAN =================
 //
 // ================= PERBAIKAN (SINKRONISASI RUMUS SALDO) =================
-// Rumus saldo disamakan dengan DashboardController::hitungSaldoPegawai(),
-// CutiController::hitungSaldoCuti(), dan RekapKuotaDetailController::hitungKuota():
+// Rumus saldo disamakan dengan DashboardController::hitungSaldoPegawai():
 //   bawaan eligible = 12 jika sisa (tahun-2) & sisa (tahun-1) sama-sama 12,
 //                     selain itu min(6, sisa tahun-1)
-//   total tersedia  = (kuota + bawaan eligible) - terpakai EFEKTIF
+//   terpakai total  = digunakan (koreksi Admin HR bila ada) + Tgh tahun ini
+//   dikembalikan    = Tgh (cuti ditangguhkan) tahun LALU
+//   total tersedia  = kuota + bawaan eligible + dikembalikan - terpakai total
 // ================= END PERBAIKAN SINKRONISASI RUMUS SALDO =================
 //
 // ================= PERBAIKAN BARU (CUTI LINTAS TAHUN) =================
@@ -47,14 +49,36 @@ use Illuminate\Support\Facades\DB;
 //   - process(): setelah saldo per tahun dikurangi, bawaan disinkronkan lewat
 //                SaldoCuti::sinkronkanBawaanPengajuan().
 // ================= END PERBAIKAN LINTAS TAHUN =================
+//
+// ================= PERBAIKAN BARU (FILTER TAHUN, DUA BAGIAN) =================
+//   - index(): hasil dipecah jadi DUA daftar:
+//       1) 'menunggu' : semua pengajuan berstatus menunggu_l1..l4 (sesuai
+//          batasan wilayah & filter nama/kelompok/jenis/status). TIDAK ikut
+//          filter tahun dan TIDAK dipaginasi, supaya antrean tidak terlewat.
+//       2) 'antrean'  : riwayat yang sudah diproses (status selain menunggu),
+//          HANYA yang rentang cutinya beririsan dengan tahun terpilih,
+//          dipaginasi. Nama prop 'antrean' dipertahankan untuk pagination.
+//   - Jendela tahun: 2 tahun ke belakang, 1 ke depan.
+// ================= END PERBAIKAN FILTER TAHUN =================
 class MonitoringCutiController extends Controller
 {
+    // Status yang dianggap "masih menunggu persetujuan".
+    private const STATUS_MENUNGGU = ['menunggu_l1', 'menunggu_l2', 'menunggu_l3', 'menunggu_l4'];
+
     // ================= HELPER BARU: RUMUS SALDO CUTI TAHUNAN =================
     // SATU-SATUNYA tempat rumus saldo di controller ini.
     // $terpakaiMurni = total hari Cuti Tahunan berstatus disetujui (pada tahun itu).
     // koreksi_saldo: NULL = ikut sistem; angka (termasuk 0) = override Admin HR.
-    private function hitungInfoSaldo(?SaldoCuti $saldo, ?SaldoCuti $saldoTahunLalu, int $terpakaiMurni): array
-    {
+    // $tangguhTahunIni = Tgh (cuti ditangguhkan) tahun ini -> ikut dihitung terpakai.
+    // $dikembalikan    = Tgh tahun LALU -> ditambahkan ke total tersedia.
+    // Dua parameter terakhir default 0 supaya pemanggil lama (process()) tetap jalan.
+    private function hitungInfoSaldo(
+        ?SaldoCuti $saldo,
+        ?SaldoCuti $saldoTahunLalu,
+        int $terpakaiMurni,
+        int $tangguhTahunIni = 0,
+        int $dikembalikan = 0
+    ): array {
         $kuota            = (int) ($saldo->kuota_tahunan ?? 12);
         $sisaTahunLalu    = (int) ($saldo->carry_forward_normal ?? 0);
         $sisaDuaTahunLalu = (int) ($saldoTahunLalu->carry_forward_normal ?? 0);
@@ -64,14 +88,16 @@ class MonitoringCutiController extends Controller
             ? max(0, (int) $koreksi)
             : max(0, $terpakaiMurni);
 
+        $terpakaiTotal = $terpakai + $tangguhTahunIni;
+
         $bawaanEligible = SaldoCuti::hitungBawaan(
             $sisaDuaTahunLalu,
             $sisaTahunLalu,
             $kuota
         );
 
-        $sisaHakTahunIni = max($kuota - $terpakai, 0);
-        $totalTersedia   = max(($kuota + $bawaanEligible) - $terpakai, 0);
+        $sisaHakTahunIni = max($kuota - $terpakaiTotal, 0);
+        $totalTersedia   = max(($kuota + $bawaanEligible + $dikembalikan) - $terpakaiTotal, 0);
 
         return [
             'kuota_tahunan'            => $kuota,
@@ -79,6 +105,9 @@ class MonitoringCutiController extends Controller
             'sisa_dua_tahun_lalu'      => $sisaDuaTahunLalu,
             'saldo_bawaan_eligible'    => $bawaanEligible,
             'cuti_terpakai'            => $terpakai,
+            'cuti_terpakai_total'      => $terpakaiTotal,
+            'cuti_ditangguhkan'        => $tangguhTahunIni,
+            'cuti_dikembalikan'        => $dikembalikan,
             'sisa_hak_tahun_berjalan'  => $sisaHakTahunIni,
             'total_cuti_tersedia'      => $totalTersedia,
         ];
@@ -127,12 +156,32 @@ class MonitoringCutiController extends Controller
     }
     // ================= END HELPER FILTER BERJENJANG ATASAN =================
 
-    // 1. Menampilkan Daftar Antrean — berfungsi sebagai Pemantau Seluruh
-    //    Transaksi (menunggu, disetujui, ditolak, ditangguhkan, dll), dengan
-    //    search & filter jenis cuti + status + kelompok/tim kerja.
-    public function index(Request $request)
+    // ================= FILTER TAHUN =================
+    private const TAHUN_KE_BELAKANG = 2;
+    private const TAHUN_KE_DEPAN    = 1;
+
+    private function daftarTahunFilter(): array
     {
-        $user = Auth::user();
+        $sekarang = (int) date('Y');
+
+        return range($sekarang + self::TAHUN_KE_DEPAN, $sekarang - self::TAHUN_KE_BELAKANG);
+    }
+
+    // ?tahun= di luar jendela (mis. 2019) otomatis kembali ke tahun berjalan.
+    private function tahunDipilih(Request $request): int
+    {
+        $tahun = (int) $request->input('tahun');
+
+        return in_array($tahun, $this->daftarTahunFilter(), true) ? $tahun : (int) date('Y');
+    }
+    // ================= END FILTER TAHUN =================
+
+    // ================= HELPER BARU: QUERY DASAR =================
+    // Batasan wilayah + semua filter dari dropdown/search/jenis/status.
+    // BELUM ada filter tahun dan BELUM dibedakan menunggu/riwayat; itu
+    // ditambahkan oleh index() supaya dua daftar memakai aturan filter yang SAMA.
+    private function bangunQueryDasar(Request $request, $user)
+    {
         $query = PengajuanCuti::with(['pegawai.saldoCutiTahunIni', 'approvalLogs.approver:id,nama,jabatan']);
 
         // --- BATASAN WILAYAH WAJIB ---
@@ -217,8 +266,29 @@ class MonitoringCutiController extends Controller
             $query->where('jenis_cuti', $request->jenis_cuti);
         }
 
-        // ================= PENGURUTAN PRIORITAS =================
-        // Status yang masih bisa di-approve oleh role yang login ditaruh di atas.
+        return $query;
+    }
+    // ================= END HELPER QUERY DASAR =================
+
+    // 1. Menampilkan Daftar Antrean — berfungsi sebagai Pemantau Seluruh
+    //    Transaksi. Hasil dibagi dua:
+    //      'menunggu' : antrean yang masih menunggu (selalu tampil, tanpa filter tahun)
+    //      'antrean'  : riwayat diproses, difilter per tahun + paginasi
+    public function index(Request $request)
+    {
+        $user = Auth::user();
+
+        $tahunFilter    = $this->tahunDipilih($request);
+        $awalTahun      = "{$tahunFilter}-01-01";
+        $awalTahunDepan = ($tahunFilter + 1) . '-01-01';
+
+        // ================= BAGIAN 1: MENUNGGU PERSETUJUAN =================
+        // Tidak ikut filter tahun dan tidak dipaginasi, supaya tidak ada
+        // pengajuan yang terlewat hanya karena tanggalnya di tahun lain.
+        $queryMenunggu = $this->bangunQueryDasar($request, $user)
+            ->whereIn('status', self::STATUS_MENUNGGU);
+
+        // Status yang bisa di-approve oleh role yang login ditaruh paling atas.
         $priorityStatus = match ($user->role_id) {
             2 => 'menunggu_l1', // Ketua Tim Kerja
             3 => 'menunggu_l2', // Ketua Kelompok Substansi
@@ -228,27 +298,42 @@ class MonitoringCutiController extends Controller
         };
 
         if ($priorityStatus) {
-            $query->orderByRaw("CASE WHEN status = ? THEN 0 ELSE 1 END", [$priorityStatus]);
+            $queryMenunggu->orderByRaw("CASE WHEN status = ? THEN 0 ELSE 1 END", [$priorityStatus]);
         }
 
-        $antrean = $query->orderBy('created_at', 'desc')
+        $menunggu = $queryMenunggu
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc')
+            ->get();
+
+        // ================= BAGIAN 2: RIWAYAT DIPROSES (FILTER TAHUN) =================
+        // Status selain menunggu, rentang cuti beririsan dengan tahun terpilih.
+        // Perbandingan langsung (tanpa whereDate) supaya aman untuk kolom date
+        // maupun datetime. Urutan ditambah id supaya pagination stabil.
+        $antrean = $this->bangunQueryDasar($request, $user)
+            ->whereNotIn('status', self::STATUS_MENUNGGU)
+            ->where('tanggal_mulai', '<', $awalTahunDepan)
+            ->where('tanggal_selesai', '>=', $awalTahun)
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc')
             ->paginate(10)
             ->withQueryString();
-        // ================= END PENGURUTAN PRIORITAS =================
 
         // Hitung sisa cuti dinamis (rumus SAMA dengan Dashboard & Rekap Kuota,
-        // lihat hitungInfoSaldo()) untuk setiap item. Semua data dihitung
-        // dengan query ter-batch untuk seluruh pegawai di halaman ini (tanpa N+1).
+        // lihat hitungInfoSaldo()) untuk setiap item di KEDUA daftar. Semua data
+        // dihitung dengan query ter-batch (tanpa N+1).
         $tahun = (int) date('Y');
 
-        $pegawaiIdsHalamanIni = $antrean->getCollection()
+        $semuaItem = $menunggu->concat($antrean->getCollection());
+
+        $pegawaiIdsHalamanIni = $semuaItem
             ->pluck('pegawai_id')
             ->filter()
             ->unique()
             ->values()
             ->all();
 
-        // [DIUBAH] Terpakai per pegawai dihitung PER TAHUN: cuti yang beririsan
+        // Terpakai per pegawai dihitung PER TAHUN: cuti yang beririsan
         // dengan tahun berjalan diambil, lalu hanya bagian di tahun itu yang dijumlah.
         $terpakaiPerPegawai = empty($pegawaiIdsHalamanIni)
             ? collect()
@@ -278,18 +363,38 @@ class MonitoringCutiController extends Controller
                 ->get()
                 ->keyBy('pegawai_id');
 
+        // Tgh (cuti ditangguhkan), sumber SAMA dengan Dashboard:
+        // tabel cuti_ditangguhkans, SUM jumlah_hari per pegawai & tahun_asal.
+        //   - tahun ini  -> ikut dihitung sebagai terpakai
+        //   - tahun lalu -> "dikembalikan" ke saldo tahun ini
+        $tghBaris = empty($pegawaiIdsHalamanIni)
+            ? collect()
+            : CutiDitangguhkan::whereIn('pegawai_id', $pegawaiIdsHalamanIni)
+                ->whereIn('tahun_asal', [$tahun, $tahun - 1])
+                ->get(['pegawai_id', 'tahun_asal', 'jumlah_hari']);
+
+        $tangguhPerPegawai = $tghBaris
+            ->where('tahun_asal', $tahun)
+            ->groupBy('pegawai_id')
+            ->map(fn($baris) => (int) $baris->sum('jumlah_hari'));
+
+        $dikembalikanPerPegawai = $tghBaris
+            ->where('tahun_asal', $tahun - 1)
+            ->groupBy('pegawai_id')
+            ->map(fn($baris) => (int) $baris->sum('jumlah_hari'));
+
         // ================= NAMA ASLI ATASAN L1 & L2 =================
         // Dua PETA (bukan query per baris, supaya tidak N+1):
         //   $petaAtasanL2 : kelompok_substansi -> Ketua Kelompok (role_id 3)
         //   $petaAtasanL1 : tim_kerja          -> Ketua Tim Kerja (role_id 2)
-        $kelompokUnikHalamanIni = $antrean->getCollection()
+        $kelompokUnikHalamanIni = $semuaItem
             ->pluck('pegawai.kelompok_substansi')
             ->filter()
             ->unique()
             ->values()
             ->all();
 
-        $timKerjaUnikHalamanIni = $antrean->getCollection()
+        $timKerjaUnikHalamanIni = $semuaItem
             ->pluck('pegawai.tim_kerja')
             ->filter(fn($t) => $t && $t !== '-')
             ->unique()
@@ -319,7 +424,17 @@ class MonitoringCutiController extends Controller
         $namaAtasanL4 = $namaPejabatAktif(6) ?? 'Kepala Biro Perencanaan';
         // ================= END NAMA ASLI ATASAN L1 & L2 =================
 
-        $antrean->getCollection()->transform(function ($item) use ($terpakaiPerPegawai, $saldoTahunLaluPerPegawai, $petaAtasanL1, $petaAtasanL2, $namaAtasanL3, $namaAtasanL4) {
+        // Satu closure yang sama dipakai untuk KEDUA daftar.
+        $perkaya = function ($item) use (
+            $terpakaiPerPegawai,
+            $saldoTahunLaluPerPegawai,
+            $tangguhPerPegawai,
+            $dikembalikanPerPegawai,
+            $petaAtasanL1,
+            $petaAtasanL2,
+            $namaAtasanL3,
+            $namaAtasanL4
+        ) {
             // Lewati kalau relasi pegawai tidak ada (mis. data pegawai terhapus)
             if (!$item->pegawai) {
                 return $item;
@@ -330,7 +445,9 @@ class MonitoringCutiController extends Controller
             $info = $this->hitungInfoSaldo(
                 $saldo,
                 $saldoTahunLaluPerPegawai->get($item->pegawai_id),
-                (int) ($terpakaiPerPegawai[$item->pegawai_id] ?? 0)
+                (int) ($terpakaiPerPegawai[$item->pegawai_id] ?? 0),
+                (int) ($tangguhPerPegawai[$item->pegawai_id] ?? 0),
+                (int) ($dikembalikanPerPegawai[$item->pegawai_id] ?? 0)
             );
 
             // Nama lama dipertahankan (kompatibilitas), nama baru ditambahkan
@@ -339,9 +456,12 @@ class MonitoringCutiController extends Controller
             $item->pegawai->kuota_tahunan           = $info['kuota_tahunan'];
             $item->pegawai->sisa_tahun_lalu         = $info['sisa_tahun_lalu'];
             $item->pegawai->cuti_terpakai           = $info['cuti_terpakai'];
+            $item->pegawai->cuti_terpakai_total     = $info['cuti_terpakai_total'];
+            $item->pegawai->cuti_ditangguhkan       = $info['cuti_ditangguhkan'];
             $item->pegawai->sisa_dua_tahun_lalu     = $info['sisa_dua_tahun_lalu'];
             $item->pegawai->sisa_hak_tahun_berjalan = $info['sisa_hak_tahun_berjalan'];
             $item->pegawai->saldo_bawaan_eligible   = $info['saldo_bawaan_eligible'];
+            $item->pegawai->cuti_dikembalikan       = $info['cuti_dikembalikan'];
             $item->pegawai->total_cuti_tersedia     = $info['total_cuti_tersedia'];
 
             // Nama asli atasan L1 & L2; fallback ke teks generik kalau jabatan lowong.
@@ -359,13 +479,19 @@ class MonitoringCutiController extends Controller
             $item->atasan_l4_nama = $namaAtasanL4;
 
             return $item;
-        });
+        };
+
+        $menunggu->transform($perkaya);
+        $antrean->getCollection()->transform($perkaya);
 
         // 'kelompok' & 'tim_kerja' ada di filters supaya nilai dropdown yang
         // sedang aktif tetap ke-load ulang saat refresh/paginasi.
         return Inertia::render('Atasan/MonitoringCuti', array_merge([
-            'antrean' => $antrean,
-            'filters' => $request->only(['search', 'jenis_cuti', 'status', 'kelompok', 'tim_kerja']),
+            'menunggu'     => $menunggu,
+            'antrean'      => $antrean,
+            'filters'      => $request->only(['search', 'jenis_cuti', 'status', 'kelompok', 'tim_kerja']),
+            'daftarTahun'  => $this->daftarTahunFilter(),
+            'tahunDipilih' => $tahunFilter,
         ], $this->buildFilterPropsUntukAtasan($user)));
     }
 
@@ -383,6 +509,9 @@ class MonitoringCutiController extends Controller
     // Seluruh proses dibungkus DB::transaction + lockForUpdate(). Kalau ada
     // langkah yang gagal, semua perubahan dibatalkan (rollback); abort(403)
     // di dalam transaksi juga otomatis me-rollback.
+    //
+    // CATATAN: redirect memakai back(), jadi query string halaman (tahun, page,
+    // filter) ikut terbawa lewat header Referer. Tidak perlu diubah.
     public function process(Request $request, int $id)
     {
         $request->validate([
@@ -542,7 +671,7 @@ class MonitoringCutiController extends Controller
                 $adalahCutiTahunan = $this->isCutiTahunan($pengajuan->jenis_cuti);
 
                 if ($adalahCutiTahunan) {
-                    // [DIUBAH] Cek saldo PER TAHUN. Cuti lintas tahun (mis. 29 Des -
+                    // Cek saldo PER TAHUN. Cuti lintas tahun (mis. 29 Des -
                     // 4 Jan) dicek terhadap saldo 2026 untuk hari kerja Desember dan
                     // saldo 2027 untuk hari kerja Januari. Rumus saldo sama dengan
                     // Dashboard & Rekap Kuota. Pengajuan ini masih berstatus

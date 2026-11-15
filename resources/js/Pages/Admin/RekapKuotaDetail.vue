@@ -9,7 +9,7 @@ import {
     onBeforeUnmount,
     h,
 } from "vue";
-import { router, useForm, Head } from "@inertiajs/vue3";
+import { router, useForm, Head, Link } from "@inertiajs/vue3";
 import MainLayout from "@/Layouts/MainLayout.vue";
 import SelAngka from "@/Components/SelAngka.vue";
 import { useTahunFilter } from "@/composables/useTahunFilter";
@@ -43,8 +43,49 @@ const IkonPensil = () =>
         ],
     );
 
+// [TERPAKAI DIKUNCI] Ikon gembok kecil untuk penanda kolom yang HANYA TAMPIL
+// (Cuti Terpakai). Angkanya diubah per bulan di Rekap Laporan.
+const IkonGembok = () =>
+    h(
+        "svg",
+        {
+            class: "w-3 h-3 shrink-0 text-slate-500",
+            fill: "none",
+            stroke: "currentColor",
+            viewBox: "0 0 24 24",
+            "aria-hidden": "true",
+        },
+        [
+            h("path", {
+                "stroke-linecap": "round",
+                "stroke-linejoin": "round",
+                "stroke-width": "2",
+                d: "M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z",
+            }),
+        ],
+    );
+
 // Tooltip untuk header kolom yang bisa diedit.
 const KETERANGAN_BISA_DIEDIT = "Kolom bisa diedit: klik angkanya";
+
+// [TERPAKAI DIKUNCI] Tooltip kolom Terpakai.
+const KETERANGAN_TERPAKAI_DIKUNCI =
+    "Terpakai dikunci di halaman ini. Ubah per bulan di Rekap Laporan.";
+
+const NAMA_BULAN_PENDEK = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "Mei",
+    "Jun",
+    "Jul",
+    "Agu",
+    "Sep",
+    "Okt",
+    "Nov",
+    "Des",
+];
 
 /**
  * Hitung saldo bawaan eligible — selaras dengan Dashboard karyawan & Excel:
@@ -76,27 +117,37 @@ const getSisaTahunLalu = (pegawai) =>
     Number(pegawai?.carry_forward_normal ?? 0);
 
 // ================================================================
-// Koreksi Cuti Terpakai (INPUT LANGSUNG / OVERRIDE) — Admin HR mengetik
-// TOTAL CUTI TERPAKAI FINAL, bukan selisih plus/minus. Nilai dikirim
-// backend lewat field 'koreksi_saldo'
-// (RekapKuotaDetailController::hitungKuota()).
+// [TERPAKAI DIKUNCI] Cuti Terpakai HANYA TAMPIL di halaman ini.
+// Angkanya berasal dari backend ('cuti_terpakai') dan diubah per bulan di
+// Rekap Laporan (koreksi bulanan), supaya selalu jelas koreksinya jatuh di
+// bulan mana. Tidak ada lagi input Terpakai / tombol "kembalikan ke sistem"
+// di sini.
 //
-// Aturan di backend:
-//   - koreksi_saldo = null -> Terpakai = angka sistem (riwayat disetujui)
-//   - koreksi_saldo = 0..n -> Terpakai = koreksi_saldo (angka Admin dipakai
-//                             apa adanya, TERMASUK 0)
-//
-// PENTING: 0 adalah koreksi yang SAH ("tidak ada cuti yang benar-benar
-// terpakai"). Jadi JANGAN pernah mengecek koreksi dengan `> 0`, `!k`,
-// atau `k || ...`. Selalu bedakan null dan 0 lewat `=== null`.
+// Field dari backend:
+//   cuti_terpakai          : Terpakai efektif (belum termasuk Tgh tahun ini)
+//   cuti_terpakai_sistem   : hitungan murni sistem (riwayat disetujui)
+//   ada_koreksi            : ada koreksi (tahunan lama ATAU bulanan)
+//   ada_koreksi_bulanan    : ada koreksi bulanan dari Rekap Laporan
+//   koreksi_bulanan        : { bulan(1-12): nilai }
+//   koreksi_saldo          : koreksi tahunan LAMA (null = tidak ada), info saja
 // ================================================================
-const getKoreksiSaldo = (pegawai) => {
+
+// Ada koreksi dari Admin HR atau tidak (bulanan atau tahunan lama).
+const adaKoreksi = (pegawai) => {
+    if (pegawai?.ada_koreksi != null) return Boolean(pegawai.ada_koreksi);
     const k = pegawai?.koreksi_saldo;
-    return k === null || k === undefined ? null : Math.max(0, Number(k) || 0);
+    return k !== null && k !== undefined;
 };
 
-// Ada override dari Admin HR atau tidak. Koreksi 0 juga dihitung override.
-const adaKoreksi = (pegawai) => getKoreksiSaldo(pegawai) !== null;
+const adaKoreksiBulanan = (pegawai) => Boolean(pegawai?.ada_koreksi_bulanan);
+
+// Nama bulan yang dikoreksi di Rekap Laporan, mis. ["Okt", "Des"].
+const bulanDikoreksi = (pegawai) =>
+    Object.keys(pegawai?.koreksi_bulanan || {})
+        .map(Number)
+        .filter((b) => b >= 1 && b <= 12)
+        .sort((a, b) => a - b)
+        .map((b) => NAMA_BULAN_PENDEK[b - 1]);
 
 // Angka cuti terpakai MURNI dari sistem (riwayat pengajuan disetujui),
 // dipakai untuk keterangan "Cuti terpakai dari sistem: X hari".
@@ -112,7 +163,7 @@ const getTerpakaiSistem = (pegawai) =>
 //
 // [ATURAN]
 //   - Tgh TAHUN YANG DILIHAT (N) adalah BAGIAN dari Terpakai N:
-//     Terpakai (tampil) = cuti disetujui + Tgh N. Angka Tgh tetap tampil
+//     Terpakai (tampil) = cuti terpakai + Tgh N. Angka Tgh tetap tampil
 //     sebagai catatan di kolom Tgh. Karena Tgh sudah ada di dalam Terpakai,
 //     Sisa N dan Saldo Akhir N TIDAK mengurangi Tgh lagi
 //     (Sisa N = Hak - Terpakai; Saldo Akhir = Total - Terpakai).
@@ -154,9 +205,9 @@ const getTotalTersedia = (pegawai) => {
 };
 
 // Cuti Terpakai yang DITAMPILKAN = cuti terpakai dari backend
-// ('cuti_terpakai': angka Admin bila ada koreksi, kalau tidak angka sistem)
-// + Tgh tahun ini. Sama dengan Dashboard karyawan (mis. 2 digunakan + 1
-// ditangguhkan = 3). Nilai 'cuti_terpakai' dari backend TIDAK menyertakan Tgh.
+// ('cuti_terpakai': sudah ikut koreksi bulanan Rekap Laporan) + Tgh tahun
+// ini. Sama dengan Dashboard karyawan (mis. 2 digunakan + 1 ditangguhkan = 3).
+// Nilai 'cuti_terpakai' dari backend TIDAK menyertakan Tgh.
 const getTerpakaiTampil = (pegawai) =>
     Number(pegawai?.cuti_terpakai ?? 0) + getSisaDitangguhkanTahunIni(pegawai);
 
@@ -190,6 +241,9 @@ const KETERANGAN_TGH_N1 = "Tgh tahun lalu menambah Total Tersedia";
 
 // Teks tooltip untuk Tgh dua tahun lalu (N-2): hanya catatan.
 const KETERANGAN_TGH_N2 = "Catatan Admin HR (tidak memengaruhi saldo)";
+
+// Teks tooltip untuk angka hasil hitungan yang bisa diklik (sorot rumusnya).
+const KETERANGAN_KLIK_RUMUS = "Klik untuk menyorot kolom sumber rumusnya";
 
 // Menerima 'dataPegawai' (satu baris per pegawai), bukan 'pengajuan'
 const props = defineProps({
@@ -238,6 +292,24 @@ const filterTahun = ref(Number(props.filters?.tahun) || currentYear);
 
 const tahunAktif = computed(() => Number(filterTahun.value) || currentYear);
 
+// [TERPAKAI DIKUNCI] Link ke Rekap Laporan, sudah terfilter ke pegawai &
+// tahun yang sedang dilihat, tempat Terpakai diubah per bulan.
+const urlRekapLaporan = (pegawai) =>
+    route("admin.rekap", {
+        tahun: tahunAktif.value,
+        search: pegawai?.nip || pegawai?.nama || undefined,
+    });
+
+// Tooltip kotak Terpakai: keterangan kunci + bulan yang dikoreksi.
+const titleTerpakai = (pegawai) => {
+    let teks = KETERANGAN_TERPAKAI_DIKUNCI;
+    if (adaKoreksi(pegawai)) {
+        const bulan = bulanDikoreksi(pegawai);
+        teks += ` Dikoreksi Admin HR${bulan.length ? ` (bulan: ${bulan.join(", ")})` : ""}, sistem mencatat ${getTerpakaiSistemTampil(pegawai)} hari.`;
+    }
+    return teks;
+};
+
 // Tgh tahun ini tetap tercatat dan menjadi bagian dari Terpakai.
 const KETERANGAN_TGH_TAHUN_INI = computed(
     () =>
@@ -248,6 +320,13 @@ const KETERANGAN_TGH_TAHUN_INI = computed(
 const KETERANGAN_SISA_TAHUN_INI = computed(
     () =>
         `Sisa jatah ${tahunAktif.value} = Hak − Terpakai (Terpakai sudah termasuk Tgh ${tahunAktif.value}; belum termasuk bawaan). Dihitung otomatis.`,
+);
+
+// Tooltip Bawaan: aturannya bukan penjumlahan, jadi dijelaskan di sini
+// (bukan lewat panel) supaya sorotan warna tetap bersih.
+const KETERANGAN_BAWAAN = computed(
+    () =>
+        `Bawaan = yang lebih kecil antara 6 dan Sisa ${tahunAktif.value - 1}. Bila Sisa ${tahunAktif.value - 2} dan Sisa ${tahunAktif.value - 1} sama-sama 12, bawaan 12. Klik untuk menyorot sumbernya.`,
 );
 
 // Daftar tahun standar dari composable (satu sumber logika untuk semua
@@ -311,31 +390,23 @@ const kpiAkumulasiPenuh = computed(() => props.kpi?.akumulasi_penuh ?? 0);
 // ---> FITUR: EDIT SALDO INLINE (KLIK ANGKA) <---
 // ========================================== //
 // Klik salah satu angka yang boleh diedit (Sisa N-2, Tgh N-2, Sisa N-1,
-// Tgh N-1, Tgh N, Hak, Terpakai) -> SEMUA kapsul editable di baris itu
-// berubah jadi input seukuran kapsul (baris tidak melebar), fokus ke angka
-// yang diklik. Hanya SATU baris yang boleh diedit pada satu waktu
-// ('editingId'). Isian sejajar dengan sheet "Saldo Tahunan" Excel:
+// Tgh N-1, Tgh N, Hak) -> SEMUA kapsul editable di baris itu berubah jadi
+// input seukuran kapsul (baris tidak melebar), fokus ke angka yang diklik.
+// Hanya SATU baris yang boleh diedit pada satu waktu ('editingId').
+// Isian sejajar dengan sheet "Saldo Tahunan" Excel:
 //   - hak           -> hak_tahun_ini            (Hak {tahun})
 //   - sisa_n1       -> carry_forward_normal     (Sisa {tahun-1})
 //   - sisa_n2       -> sisa_cuti_dua_tahun_lalu (Sisa {tahun-2})
-//   - terpakai +    -> koreksi_saldo            (angka FINAL, bukan +/-)
-//     pakai_sistem
 //   - tgh_n2/n1/n0  -> sisa_ditangguhkan_*      (N-2 hanya catatan; N-1
 //                                                menambah Total; N sudah
 //                                                termasuk di Terpakai)
-// Bawaan Eligible, Sisa {tahun}, Total Tersedia & Saldo Akhir dihitung
-// otomatis (pratinjau langsung saat mengetik; angka final tetap dari backend).
+// Bawaan Eligible, Sisa {tahun}, Total Tersedia, Terpakai & Saldo Akhir
+// dihitung otomatis (pratinjau langsung saat mengetik; angka final tetap
+// dari backend).
 //
-// KOREKSI CUTI TERPAKAI:
-//   - pakai_sistem = true  -> koreksi_saldo dikirim null (ikut angka sistem)
-//   - pakai_sistem = false -> angka dikirim apa adanya, TERMASUK 0
-//   Mengetik di kotak Terpakai otomatis mematikan pakai_sistem; tombol ↺
-//   mengembalikannya ke angka sistem.
-//
-// Kotak Terpakai berisi angka TAMPIL (sudah termasuk Tgh tahun ini). Saat
-// disimpan, Tgh tahun ini dikurangkan lagi dari angka kotak, supaya
-// 'koreksi_saldo' di database tetap berarti "cuti terpakai TANPA Tgh"
-// dan Tgh tidak terhitung dua kali di backend.
+// [TERPAKAI DIKUNCI] Terpakai TIDAK bisa diedit di sini. Admin HR mengubahnya
+// per bulan di Rekap Laporan. Mengubah Tgh tahun ini tetap menggeser angka
+// Terpakai yang tampil (Terpakai = cuti terpakai + Tgh tahun ini).
 //
 // Enter = Simpan, Esc = Batal.
 const editingId = ref(null);
@@ -352,8 +423,6 @@ const draft = reactive({
     tgh_n1: 0,
     tgh_n0: 0,
     hak: 0,
-    terpakai: 0,
-    pakai_sistem: true,
 });
 const snapshotDraft = ref("");
 const isDirty = computed(() => JSON.stringify(draft) !== snapshotDraft.value);
@@ -398,11 +467,8 @@ const previewEdit = computed(() => {
     // [DIUBAH] Batas 24 dinonaktifkan: Bawaan tidak bergantung pada Hak
     // (selaras dengan SaldoCuti::TERAPKAN_BATAS_ATAS_TOTAL_HAK = false).
     const bawaan = Math.max(0, normal);
-    // Mode "ikut sistem": angka sistem + Tgh tahun ini.
-    // Mode manual: kotak Terpakai sudah berisi angka tampil.
-    const terpakai = draft.pakai_sistem
-        ? getTerpakaiSistem(p) + tghTahunIni
-        : angka(draft.terpakai);
+    // Terpakai (dikunci) dari backend + Tgh tahun ini hasil ketikan.
+    const terpakai = (Number(p.cuti_terpakai) || 0) + tghTahunIni;
     // Tgh N-1 menambah Total Tersedia (sama dengan backend). Tgh N-2 hanya
     // catatan, jadi tidak masuk.
     const total = hak + bawaan + angka(draft.tgh_n1);
@@ -453,13 +519,341 @@ const nilaiSaldoAkhir = (p) =>
 // nilaiTerpakai(), jadi ikut berubah langsung saat baris sedang diedit.
 const nilaiSisaTahunIni = (p) => Math.max(0, nilaiHak(p) - nilaiTerpakai(p));
 
+// ================================================================
+// FITUR: SOROT RUMUS DENGAN WARNA (KLIK ANGKA HASIL)
+// Kolom hasil hitungan (Sisa N, Bawaan, Total, Terpakai, Saldo Akhir)
+// masing-masing punya WARNA sendiri. Klik angka hasil di satu baris:
+//   - angka yang diklik terisi penuh dengan warnanya,
+//   - kolom sumber rumusnya terisi warna yang SAMA (lebih muda) dan diberi
+//     tanda + / − di atasnya,
+//   - kolom lain di baris itu meredup,
+//   - header kolom sumber ikut diberi warna.
+// Tidak ada panel penjelasan; cukup lewat warna. Aturan Bawaan (bukan
+// penjumlahan) dijelaskan lewat tooltip.
+//
+// Rumus (sesuai catatan Admin HR):
+//   1. Sisa N        = Hak N − Terpakai N
+//   2. Bawaan N      = min(6, Sisa N-1), atau 12 bila Sisa N-2 dan N-1
+//                      sama-sama 12 (lihat getSaldoBawaanEligible)
+//   3. Total N       = Tgh N-1 + Bawaan N + Hak N
+//   4. Saldo Akhir N = Total N − Terpakai N
+//   5. Terpakai N    = cuti terpakai (dikunci) + Tgh N
+// [TERPAKAI DIKUNCI] Klik angka Terpakai sekarang menyorot sumbernya
+// (Tgh tahun ini), bukan masuk mode edit.
+//
+// Hanya SATU baris yang disorot pada satu waktu.
+// SOROTAN TETAP MENYALA selama baris itu diedit, jadi admin bisa menyorot
+// Sisa N, lalu mengklik Hak untuk mengubahnya sambil melihat pratinjau.
+// Sorotan ditutup oleh: Simpan berhasil, Batal, Esc, klik di luar area
+// baris/rumus, pindah ke baris lain, atau klik angka yang sama lagi.
+//
+// Klik angka hasil juga MELEPAS seleksi kotak input sebelumnya
+// ('fokusEdit' = null), jadi cincin oranye / lencana Δ dari kotak yang
+// tadi difokus tidak ikut menempel.
+// ================================================================
+const rumusAktif = ref(null); // { id, kolom: 'sisa'|'bawaan'|'total'|'terpakai'|'saldo' }
+
+const toggleRumus = (p, kolom) => {
+    // Pindah ke kolom lain: seleksi (sorot dampak) kotak sebelumnya dilepas.
+    fokusEdit.value = null;
+
+    const a = rumusAktif.value;
+    rumusAktif.value =
+        a?.id === p.id && a?.kolom === kolom ? null : { id: p.id, kolom };
+};
+
+const rumusDibuka = (p, kolom) =>
+    rumusAktif.value?.id === p.id && rumusAktif.value?.kolom === kolom;
+
+// Kolom sumber (kunci sel) untuk tiap hasil hitungan.
+const SUMBER_RUMUS = {
+    sisa: ["hak", "terpakai"],
+    bawaan: ["sisa_n2", "sisa_n1"],
+    total: ["tgh_n1", "bawaan", "hak"],
+    terpakai: ["tgh_n0"],
+    saldo: ["total", "terpakai"],
+};
+
+// Kunci sel untuk angka hasil yang diklik (target).
+const KUNCI_TARGET_RUMUS = {
+    sisa: "sisa_n0",
+    bawaan: "bawaan",
+    total: "total",
+    terpakai: "terpakai",
+    saldo: "saldo",
+};
+
+// Warna per hasil hitungan. Ditulis literal supaya terbaca Tailwind.
+//   dasar       = warna kolom saat tidak disorot
+//   pilih       = kolom yang diklik (terisi penuh)
+//   sumber      = kolom yang masuk rumus (warna kolom yang diklik)
+//   lencana     = bulatan tanda + / −
+//   header      = warna header kolom sumber; headerPilih = header kolom target
+const WARNA_HASIL = {
+    sisa: {
+        dasar: "bg-sky-100 text-sky-800 border-sky-300/80",
+        pilih: "bg-sky-600 text-white border-sky-700 ring-2 ring-offset-1 ring-sky-600",
+        sumber: "bg-sky-200 text-sky-900 border-sky-500 ring-2 ring-offset-1 ring-sky-500",
+        lencana: "bg-sky-600 text-white",
+        header: "bg-sky-100",
+        headerPilih: "bg-sky-200",
+    },
+    bawaan: {
+        dasar: "bg-emerald-100 text-emerald-800 border-emerald-300/80",
+        pilih: "bg-emerald-600 text-white border-emerald-700 ring-2 ring-offset-1 ring-emerald-600",
+        sumber: "bg-emerald-200 text-emerald-900 border-emerald-500 ring-2 ring-offset-1 ring-emerald-500",
+        lencana: "bg-emerald-600 text-white",
+        header: "bg-emerald-100",
+        headerPilih: "bg-emerald-200",
+    },
+    total: {
+        dasar: "bg-indigo-100 text-indigo-800 border-indigo-300/80",
+        pilih: "bg-indigo-600 text-white border-indigo-700 ring-2 ring-offset-1 ring-indigo-600",
+        sumber: "bg-indigo-200 text-indigo-900 border-indigo-500 ring-2 ring-offset-1 ring-indigo-500",
+        lencana: "bg-indigo-600 text-white",
+        header: "bg-indigo-100",
+        headerPilih: "bg-indigo-200",
+    },
+    terpakai: {
+        dasar: "bg-rose-100 text-rose-800 border-rose-300/80",
+        pilih: "bg-rose-600 text-white border-rose-700 ring-2 ring-offset-1 ring-rose-600",
+        sumber: "bg-rose-200 text-rose-900 border-rose-500 ring-2 ring-offset-1 ring-rose-500",
+        lencana: "bg-rose-600 text-white",
+        header: "bg-rose-100",
+        headerPilih: "bg-rose-200",
+    },
+    saldo: {
+        dasar: "bg-slate-800 text-white border-slate-900",
+        pilih: "bg-slate-800 text-white border-slate-900 ring-2 ring-offset-1 ring-slate-900",
+        sumber: "bg-amber-200 text-amber-900 border-amber-500 ring-2 ring-offset-1 ring-amber-500",
+        lencana: "bg-amber-600 text-white",
+        header: "bg-amber-100",
+        headerPilih: "bg-slate-300",
+    },
+};
+
+// Kolom input (Sisa N-2, Sisa N-1, Tgh, Hak) TIDAK berwarna: putih netral.
+// Warnanya baru muncul sebagai kolom sumber saat ada rumus yang disorot.
+const KELAS_INPUT_NETRAL = "bg-white text-slate-700 border-slate-300";
+
+// Tanda operasi di atas kolom sumber. Bawaan sengaja kosong karena
+// aturannya bukan penjumlahan (dijelaskan lewat tooltip).
+const OPERATOR_SUMBER = {
+    sisa: { hak: "+", terpakai: "−" },
+    total: { tgh_n1: "+", bawaan: "+", hak: "+" },
+    terpakai: { tgh_n0: "+" },
+    saldo: { total: "+", terpakai: "−" },
+};
+
+// ================================================================
+// FITUR: SOROT DAMPAK EDIT (ARAH KEBALIKAN DARI SOROT RUMUS)
+// Sorot rumus menjawab "angka ini dihitung dari kolom mana?". Fitur ini
+// menjawab pertanyaan yang muncul saat admin klik edit: "kalau saya ubah
+// kolom ini, kolom mana yang ikut berubah?".
+//
+// Saat baris diedit dan satu kotak input sedang difokus ('fokusEdit'):
+//   - kotak yang difokus tetap normal,
+//   - kolom yang ikut berubah diberi cincin ORANYE + lencana "Δ", header-nya
+//     berwarna oranye, dan tidak diredupkan,
+//   - kolom yang tidak terkait meredup.
+//
+// Fokus dilacak lewat 'focusin' pada atribut data-edit-field. Fitur ini
+// BERJALAN BERSAMAAN dengan sorot rumus.
+//
+// PETA DAMPAK (harus selaras dengan rumus di atas dan previewEdit):
+//   Sisa N-2 / Sisa N-1 -> Bawaan -> Total -> Saldo Akhir
+//   Tgh N-1             -> Total -> Saldo Akhir
+//   Hak                 -> Sisa N, Total -> Saldo Akhir
+//   Tgh N               -> Terpakai -> Sisa N, Saldo Akhir
+//   Tgh N-2             -> (hanya catatan, tidak memengaruhi kolom lain)
+// Kalau rumus di backend/previewEdit berubah, UBAH PETA INI JUGA.
+// ================================================================
+const DAMPAK_EDIT = {
+    sisa_n2: ["bawaan", "total", "saldo"],
+    tgh_n2: [],
+    sisa_n1: ["bawaan", "total", "saldo"],
+    tgh_n1: ["total", "saldo"],
+    tgh_n0: ["terpakai", "sisa_n0", "saldo"],
+    hak: ["sisa_n0", "total", "saldo"],
+};
+
+// Cincin oranye untuk kolom yang terdampak (literal supaya terbaca Tailwind).
+const KELAS_DAMPAK = "ring-2 ring-offset-1 ring-orange-400";
+
+// Nama field draft yang sedang difokus pada baris yang diedit.
+const fokusEdit = ref(null);
+
+// 'fokus' | 'dampak' | 'redup' | null untuk satu sel di baris pegawai p.
+const statusDampak = (p, key) => {
+    if (!isEditing(p) || !fokusEdit.value) return null;
+    if (key === fokusEdit.value) return "fokus";
+    return DAMPAK_EDIT[fokusEdit.value]?.includes(key) ? "dampak" : "redup";
+};
+
+// Lacak kotak input yang sedang difokus (tabel & kartu HP memakai atribut
+// data-edit-field yang sama).
+// Setiap kali kotak input berpindah fokus (klik atau Tab), seleksi lama
+// DITUTUP dan hanya kotak baru yang aktif: sorotan dampak pindah ke kotak
+// yang baru difokus, sorotan rumus sebelumnya ditutup.
+const lacakFokusEdit = (e) => {
+    if (editingId.value === null) return;
+    const field = e.target?.getAttribute?.("data-edit-field");
+    if (!field) return;
+    fokusEdit.value = field;
+    rumusAktif.value = null;
+};
+
+// Keluar dari mode edit = sorotan dampak ikut hilang.
+watch(editingId, (id) => {
+    if (id === null) fokusEdit.value = null;
+});
+// ================= END FITUR SOROT DAMPAK EDIT =================
+
+// 'pilih' | 'sumber' | 'redup' | null untuk satu sel di baris pegawai p.
+const statusSel = (p, key) => {
+    const a = rumusAktif.value;
+    if (!a || a.id !== p.id) return null;
+    if (KUNCI_TARGET_RUMUS[a.kolom] === key) return "pilih";
+    if (SUMBER_RUMUS[a.kolom].includes(key)) return "sumber";
+    return "redup";
+};
+
+// Warna sel: warna target/sumber kalau sedang disorot, kalau tidak warna dasarnya.
+// Kolom yang terdampak edit (dan tidak sedang menjadi target/sumber rumus)
+// diberi cincin oranye.
+const kelasSel = (p, key, dasar) => {
+    const s = statusSel(p, key);
+    const a = rumusAktif.value;
+    if (s === "pilih") return WARNA_HASIL[a.kolom].pilih;
+    if (s === "sumber") return WARNA_HASIL[a.kolom].sumber;
+    if (statusDampak(p, key) === "dampak") return `${dasar} ${KELAS_DAMPAK}`;
+    return dasar;
+};
+
+// Hanya warna sorotan (tanpa warna dasar). Dipakai kotak INPUT yang sedang
+// diedit supaya warna sumber/target tetap terlihat. Kosong kalau tidak disorot.
+const kelasSorot = (p, key) => {
+    const s = statusSel(p, key);
+    const a = rumusAktif.value;
+    if (s === "pilih") return WARNA_HASIL[a.kolom].pilih;
+    if (s === "sumber") return WARNA_HASIL[a.kolom].sumber;
+    if (statusDampak(p, key) === "dampak") return KELAS_DAMPAK;
+    return "";
+};
+
+// Sel yang tidak ikut rumus meredup. Sel yang terdampak edit (atau yang
+// sedang difokus) tidak diredupkan; sel di luar dampak edit meredup lebih
+// ringan supaya tetap bisa diklik.
+const kelasRedup = (p, key) => {
+    const r = statusSel(p, key);
+    const d = statusDampak(p, key);
+    if (r === "pilih" || r === "sumber") return "";
+    if (d === "dampak" || d === "fokus") return "";
+    if (r === "redup") return "opacity-30";
+    if (d === "redup") return "opacity-40";
+    return "";
+};
+
+// Header kolom ikut berwarna (sama untuk semua baris). Selalu mengembalikan
+// background PENUH (tanpa opacity) karena header menempel (sticky) di atas
+// isi tabel; kalau transparan, isi baris akan tembus ke header.
+// Urutan: warna rumus (target/sumber) -> warna dampak edit (kotak difokus
+// hijau, kolom terdampak oranye) -> redup bila ada sorotan lain.
+const kelasHeader = (key) => {
+    const a = rumusAktif.value;
+    if (a) {
+        if (KUNCI_TARGET_RUMUS[a.kolom] === key)
+            return WARNA_HASIL[a.kolom].headerPilih;
+        if (SUMBER_RUMUS[a.kolom].includes(key))
+            return WARNA_HASIL[a.kolom].header;
+    }
+
+    const f = fokusEdit.value;
+    const sedangEdit = editingId.value !== null && Boolean(f);
+    if (sedangEdit) {
+        if (key === f) return "bg-emerald-100";
+        if (DAMPAK_EDIT[f]?.includes(key)) return "bg-orange-100";
+    }
+
+    if (a || sedangEdit) return "bg-slate-50 text-slate-300";
+    return "bg-slate-50";
+};
+
+// Teks operasi (+ / −) untuk kolom sumber, atau null.
+const lencanaOp = (p, key) => {
+    const a = rumusAktif.value;
+    if (statusSel(p, key) !== "sumber") return null;
+    return OPERATOR_SUMBER[a.kolom]?.[key] ?? null;
+};
+
+// Bulatan kecil di atas kolom: tanda +/− untuk kolom sumber rumus, atau
+// "Δ" oranye untuk kolom yang ikut berubah saat kotak input diedit.
+// Taruh di dalam elemen 'relative' (<td class="relative"> atau pembungkus
+// kartu). 'atas' = posisi vertikal.
+const LencanaOp = (propsLencana) => {
+    const posisi = `absolute left-1/2 ${propsLencana.atas || "top-0.5"} z-10 flex h-4 w-4 -translate-x-1/2 items-center justify-center rounded-full text-[11px] font-bold leading-none pointer-events-none`;
+
+    const teks = lencanaOp(propsLencana.p, propsLencana.kunci);
+    if (teks) {
+        return h(
+            "span",
+            {
+                class: `${posisi} ${WARNA_HASIL[rumusAktif.value.kolom].lencana}`,
+                "aria-hidden": "true",
+            },
+            teks,
+        );
+    }
+
+    // Kolom yang bukan sumber rumus tapi ikut berubah karena edit.
+    const s = statusSel(propsLencana.p, propsLencana.kunci);
+    if (
+        s !== "sumber" &&
+        s !== "pilih" &&
+        statusDampak(propsLencana.p, propsLencana.kunci) === "dampak"
+    ) {
+        return h(
+            "span",
+            {
+                class: `${posisi} bg-orange-500 text-white`,
+                title: "Ikut berubah saat kolom yang diedit diubah",
+                "aria-hidden": "true",
+            },
+            "Δ",
+        );
+    }
+
+    return null;
+};
+LencanaOp.props = ["p", "kunci", "atas"];
+
+// Kartu HP: kunci stat memakai '-' (mis. 'sisa-n2'), kunci rumus memakai '_'.
+const kunciRumus = (key) => key.replace(/-/g, "_");
+
+// Kartu HP: stat hasil hitungan yang bisa diklik -> kolom rumusnya.
+const KOLOM_RUMUS_KARTU = {
+    "sisa-n0": "sisa",
+    bawaan: "bawaan",
+    total: "total",
+    terpakai: "terpakai",
+};
+
+// Klik di luar area rumus (angka hasil / kapsul & input di baris) menutup
+// sorotan. Memakai composedPath() karena saat kapsul diklik ia langsung
+// berganti jadi <input>; elemen lamanya sudah lepas dari DOM sehingga
+// closest() akan keliru menganggapnya "di luar".
+const tutupRumusSaatKlikLuar = (e) => {
+    if (!rumusAktif.value) return;
+    const didalamArea = e
+        .composedPath()
+        .some((n) => n instanceof Element && n.hasAttribute("data-rumus-area"));
+    if (!didalamArea) rumusAktif.value = null;
+};
+// ================= END FITUR SOROT RUMUS =================
+
 // Isi draft dari data pegawai, lalu simpan kondisinya sebagai baseline
 // (isDirty = false sampai admin benar-benar mengubah isian).
-// Tanpa koreksi (null): pakai_sistem = true dan kotak berisi angka sistem + Tgh.
-// Dengan koreksi (termasuk 0): pakai_sistem = false dan kotak berisi koreksi + Tgh.
 const isiDraftDariPegawai = (p) => {
-    const koreksi = getKoreksiSaldo(p);
-
     saldoForm.clearErrors();
     Object.assign(draft, {
         sisa_n2: getSisaDuaTahunLalu(p),
@@ -468,36 +862,13 @@ const isiDraftDariPegawai = (p) => {
         tgh_n1: getSisaDitangguhkanN1(p),
         tgh_n0: getSisaDitangguhkanTahunIni(p),
         hak: getSisaTahunIni(p),
-        terpakai:
-            (koreksi ?? getTerpakaiSistem(p)) + getSisaDitangguhkanTahunIni(p),
-        pakai_sistem: koreksi === null,
     });
     snapshotDraft.value = JSON.stringify(draft);
 };
 
-// Mengetik di Terpakai = tidak lagi mengikuti angka sistem.
-// Mengubah Tgh tahun ini ikut menggeser kotak Terpakai dengan selisih yang
-// sama (karena Terpakai tampil memuat Tgh), sehingga angka koreksi yang
-// tersimpan (Terpakai - Tgh) tidak berubah diam-diam.
+// Ubah satu isian draft.
 const ubahDraft = (field, nilai) => {
-    if (
-        field === "tgh_n0" &&
-        draft.terpakai !== "" &&
-        draft.terpakai != null
-    ) {
-        const selisih = angka(nilai) - angka(draft.tgh_n0);
-        draft.terpakai = Math.max(0, angka(draft.terpakai) + selisih);
-    }
     draft[field] = nilai;
-    if (field === "terpakai") draft.pakai_sistem = false;
-};
-
-// Kembalikan Terpakai ke angka sistem (koreksi_saldo dikirim null).
-const kembalikanTerpakaiKeSistem = () => {
-    if (!pegawaiEdit.value) return;
-    draft.pakai_sistem = true;
-    draft.terpakai =
-        getTerpakaiSistem(pegawaiEdit.value) + angka(draft.tgh_n0);
 };
 
 // Fokus ke kotak yang sedang terlihat (tabel & kartu sama-sama ada di DOM,
@@ -513,26 +884,34 @@ const fokuskan = async (field) => {
 // Masuk mode edit untuk satu baris. Kalau ada baris lain yang sedang
 // diedit, perubahannya dibuang (hanya satu baris aktif). Kalau baris ini
 // sudah diedit, hanya pindah fokus.
+// Kotak yang diklik langsung menjadi fokus sorotan dampak edit (menggantikan
+// seleksi kotak sebelumnya).
 const mulaiEdit = (pegawai, field = "hak") => {
     if (isSavingSaldo.value) return;
+    // Klik kotak baru = sorotan rumus sebelumnya ditutup.
+    rumusAktif.value = null;
     if (!isEditing(pegawai)) {
         editingId.value = pegawai.id;
         clearTimeout(timerPesanSukses);
         pesanSukses.value = "";
         isiDraftDariPegawai(pegawai);
     }
+    fokusEdit.value = field;
     fokuskan(field);
 };
 
-// Keluar dari mode edit tanpa menyimpan.
+// Keluar dari mode edit tanpa menyimpan (sorotan ikut ditutup).
 const batalEdit = () => {
     if (isSavingSaldo.value) return;
     editingId.value = null;
+    rumusAktif.value = null;
+    fokusEdit.value = null;
     saldoForm.clearErrors();
 };
 
 // Setelah simpan, baris kembali ke mode tampil. Data terbaru datang dari
 // props (diperbarui Inertia), sehingga angka di baris ikut berubah.
+// [TERPAKAI DIKUNCI] 'koreksi_saldo' & 'pakai_sistem' tidak dikirim lagi.
 const simpanSaldo = (pegawai) => {
     if (!pegawai || !isEditing(pegawai) || isSavingSaldo.value) return;
     if (!isDirty.value) return;
@@ -548,18 +927,6 @@ const simpanSaldo = (pegawai) => {
             sisa_ditangguhkan_dua_tahun_lalu: angka(draft.tgh_n2),
             sisa_ditangguhkan_tahun_lalu: angka(draft.tgh_n1),
             sisa_ditangguhkan_tahun_ini: angka(draft.tgh_n0),
-            pakai_sistem: draft.pakai_sistem,
-            // Ikut sistem -> null. Selain itu angka apa adanya, TERMASUK 0.
-            // Kotak Terpakai berisi angka tampil (sudah memuat Tgh tahun
-            // ini), jadi Tgh dikurangkan lagi sebelum dikirim agar
-            // koreksi_saldo tetap "tanpa Tgh" seperti yang dipakai backend.
-            // Kotak kosong dikirim null lalu ditolak backend dengan pesan
-            // error (tidak disimpan diam-diam jadi 0).
-            koreksi_saldo: draft.pakai_sistem
-                ? null
-                : draft.terpakai === "" || draft.terpakai == null
-                  ? null
-                  : Math.max(0, Number(draft.terpakai) - angka(draft.tgh_n0)),
             tahun: tahunAktif.value,
         }))
         .put(route("admin.rekap-kuota.update-saldo", idAktif), {
@@ -570,6 +937,9 @@ const simpanSaldo = (pegawai) => {
                 if (editingId.value === idAktif) {
                     editingId.value = null;
                 }
+                // Simpan berhasil: sorotan rumus & dampak ikut ditutup.
+                rumusAktif.value = null;
+                fokusEdit.value = null;
                 saldoForm.clearErrors();
                 pesanSukses.value = `Saldo ${namaPegawai} tahun ${tahunAktif.value} berhasil disimpan.`;
                 clearTimeout(timerPesanSukses);
@@ -585,12 +955,22 @@ const simpanSaldo = (pegawai) => {
 // diedit mungkin sudah tidak ada, jadi mode edit dibatalkan.
 watch(filterTahun, () => {
     editingId.value = null;
+    rumusAktif.value = null;
+    fokusEdit.value = null;
     saldoForm.clearErrors();
 });
 
 watch(
     () => props.dataPegawai?.data,
     () => {
+        if (
+            rumusAktif.value &&
+            !daftarPegawaiHalamanIni.value.some(
+                (p) => p.id === rumusAktif.value.id,
+            )
+        ) {
+            rumusAktif.value = null;
+        }
         if (editingId.value !== null && !pegawaiEdit.value) {
             editingId.value = null;
             saldoForm.clearErrors();
@@ -605,23 +985,26 @@ watch(
 // pegawai supaya tidak perlu geser horizontal. Angkanya TETAP memakai
 // helper yang sama dengan tabel (satu sumber logika).
 // 'field' = nama field draft bila kotak itu bisa diedit inline.
+// 'kunci' = kotak dikunci (hanya tampil), yaitu Terpakai.
 //
 // URUTAN SAMA DENGAN TABEL: Sisa tahun ini (hitungan otomatis) dan Tgh tahun
 // ini (bagian dari Terpakai) diletakkan tepat di samping Tgh tahun lalu,
 // sebelum Bawaan.
+//
+// WARNA: kolom input (Sisa N-2, Sisa N-1, Tgh, Hak) putih netral, dan kolom
+// hasil hitungan memakai warna dari WARNA_HASIL (sama dengan tabel).
 // ================================================================
 const getStatKartu = (pegawai) => {
     const t = tahunAktif.value;
     const akhirTahun = (tahun) => String(tahun).slice(-2);
-    const abu = "bg-slate-200 text-slate-700 border-slate-300/80";
-    const oranye = "bg-orange-100 text-orange-800 border-orange-300/80";
+    const netral = KELAS_INPUT_NETRAL;
 
     return [
         {
             key: "sisa-n2",
             label: `Sisa ${t - 2}`,
             nilai: nilaiSisaN2(pegawai),
-            kelas: abu,
+            kelas: netral,
             labelKelas: "text-slate-500",
             field: "sisa_n2",
             max: 12,
@@ -630,8 +1013,8 @@ const getStatKartu = (pegawai) => {
             key: "tgh-n2",
             label: `Tgh '${akhirTahun(t - 2)}`,
             nilai: nilaiTghN2(pegawai),
-            kelas: oranye,
-            labelKelas: "text-orange-600",
+            kelas: netral,
+            labelKelas: "text-slate-500",
             field: "tgh_n2",
             title: KETERANGAN_TGH_N2,
         },
@@ -639,7 +1022,7 @@ const getStatKartu = (pegawai) => {
             key: "sisa-n1",
             label: `Sisa ${t - 1}`,
             nilai: nilaiSisaN1(pegawai),
-            kelas: abu,
+            kelas: netral,
             labelKelas: "text-slate-500",
             field: "sisa_n1",
             max: 12,
@@ -648,18 +1031,18 @@ const getStatKartu = (pegawai) => {
             key: "tgh-n1",
             label: `Tgh '${akhirTahun(t - 1)}`,
             nilai: nilaiTghN1(pegawai),
-            kelas: oranye,
-            labelKelas: "text-orange-600",
+            kelas: netral,
+            labelKelas: "text-slate-500",
             field: "tgh_n1",
             title: KETERANGAN_TGH_N1,
         },
         {
             // Hitungan otomatis (Hak - Terpakai), tanpa 'field' = tidak bisa
-            // diedit
+            // diedit. Bisa diklik untuk menyorot rumusnya.
             key: "sisa-n0",
             label: `Sisa ${t}`,
             nilai: nilaiSisaTahunIni(pegawai),
-            kelas: abu,
+            kelas: WARNA_HASIL.sisa.dasar,
             labelKelas: "text-slate-500",
             title: KETERANGAN_SISA_TAHUN_INI.value,
         },
@@ -667,8 +1050,8 @@ const getStatKartu = (pegawai) => {
             key: "tgh-n0",
             label: `Tgh '${akhirTahun(t)}`,
             nilai: nilaiTghN0(pegawai),
-            kelas: oranye,
-            labelKelas: "text-orange-600",
+            kelas: netral,
+            labelKelas: "text-slate-500",
             field: "tgh_n0",
             title: KETERANGAN_TGH_TAHUN_INI.value,
         },
@@ -676,36 +1059,37 @@ const getStatKartu = (pegawai) => {
             key: "bawaan",
             label: `Bawaan ${t}`,
             nilai: nilaiBawaan(pegawai),
-            kelas: "bg-emerald-100 text-emerald-800 border-emerald-300/80",
+            kelas: WARNA_HASIL.bawaan.dasar,
             labelKelas: "text-slate-500",
+            title: KETERANGAN_BAWAAN.value,
         },
         {
             key: "hak",
             label: `Hak ${t}`,
             nilai: nilaiHak(pegawai),
-            kelas: "bg-blue-100 text-blue-800 border-blue-300/80",
+            kelas: netral,
             labelKelas: "text-slate-500",
             field: "hak",
+            max: 365,
         },
         {
             key: "total",
             label: `Total ${t}`,
             nilai: nilaiTotal(pegawai),
-            kelas: "bg-indigo-100 text-indigo-800 border-indigo-300/80",
+            kelas: WARNA_HASIL.total.dasar,
             labelKelas: "text-slate-500",
         },
         {
+            // [TERPAKAI DIKUNCI] tanpa 'field': hanya tampil. Diketuk untuk
+            // menyorot sumbernya (Tgh tahun ini).
             key: "terpakai",
             label: `Terpakai ${t}`,
             nilai: nilaiTerpakai(pegawai),
-            kelas: "bg-rose-100 text-rose-800 border-rose-300/80",
+            kelas: WARNA_HASIL.terpakai.dasar,
             labelKelas: "text-slate-500",
             bintang: !isEditing(pegawai) && adaKoreksi(pegawai),
-            field: "terpakai",
-            max: 365,
-            title: adaKoreksi(pegawai)
-                ? `Dikoreksi Admin HR (sistem mencatat ${getTerpakaiSistemTampil(pegawai)} hari)`
-                : "",
+            kunci: true,
+            title: titleTerpakai(pegawai),
         },
     ];
 };
@@ -740,7 +1124,8 @@ const getDurasi = (item) => {
 
 // ================================================================
 // FILTER RIWAYAT DI MODAL RINCIAN
-// Membantu Admin HR memverifikasi angka Terpakai sebelum mengoreksi:
+// Membantu Admin HR memverifikasi angka Terpakai sebelum mengoreksi
+// (koreksi dilakukan per bulan di Rekap Laporan):
 //   - Chip status (default: Disetujui, yang menjadi dasar hitungan Terpakai)
 //   - "Hanya Cuti Tahunan" (default aktif; jenis lain tidak mengurangi kuota)
 //   - Ringkasan total hari Cuti Tahunan disetujui di tahun aktif, dibanding
@@ -1064,22 +1449,29 @@ const tutupDropdownSaatKlikLuar = (event) => {
 };
 
 // Tombol Esc menutup modal yang sedang terbuka (paling atas dulu).
-// Kalau tidak ada modal, Esc membatalkan mode edit inline.
+// Kalau tidak ada modal: Esc membatalkan mode edit inline (sekaligus
+// menutup sorotan rumus & dampak); kalau tidak sedang edit, Esc menutup
+// sorotan.
 const tutupModalSaatEsc = (event) => {
     if (event.key !== "Escape") return;
     if (isGenerateSaldoModalOpen.value) closeGenerateSaldoModal();
     else if (isImportModalOpen.value) closeImportModal();
     else if (showModal.value) closeModal();
     else if (editingId.value !== null) batalEdit();
+    else if (rumusAktif.value) rumusAktif.value = null;
 };
 
 onMounted(() => {
     document.addEventListener("click", tutupDropdownSaatKlikLuar);
+    document.addEventListener("click", tutupRumusSaatKlikLuar);
     document.addEventListener("keydown", tutupModalSaatEsc);
+    document.addEventListener("focusin", lacakFokusEdit);
 });
 onBeforeUnmount(() => {
     document.removeEventListener("click", tutupDropdownSaatKlikLuar);
+    document.removeEventListener("click", tutupRumusSaatKlikLuar);
     document.removeEventListener("keydown", tutupModalSaatEsc);
+    document.removeEventListener("focusin", lacakFokusEdit);
     clearTimeout(timerPesanSukses);
     clearTimeout(timerPesanImpor);
     // Pastikan scroll halaman tidak tertinggal terkunci
@@ -1407,6 +1799,7 @@ watch(adaModalTerbuka, (terbuka) => {
                  baris kedua tapi tetap rata kanan. Di HP / tablet kecil
                  tombol berada di bawah judul.
 
+
                  Skema warna tombol per jenis aksi:
                    - Impor           -> Blue
                    - Generate Saldo  -> Emerald
@@ -1415,13 +1808,16 @@ watch(adaModalTerbuka, (terbuka) => {
                     class="flex flex-col gap-3 sm:gap-4 mb-4 sm:mb-5 lg:flex-row lg:items-center lg:justify-between"
                 >
                     <div class="lg:min-w-[14rem] lg:flex-1">
-                        <h2 class="text-base sm:text-lg font-bold text-gray-800">
+                        <h2
+                            class="text-base sm:text-lg font-bold text-gray-800"
+                        >
                             Rekap Kuota Detail Cuti
                         </h2>
                         <p class="text-xs sm:text-sm text-gray-500 mt-0.5">
                             Lihat sisa, edit saldo langsung di baris (klik
                             angkanya), dan riwayat pemakaian kuota cuti tahunan
-                            tiap pegawai.
+                            tiap pegawai. Cuti Terpakai hanya tampil di sini;
+                            ubah per bulan di Rekap Laporan.
                         </p>
                     </div>
 
@@ -1437,8 +1833,18 @@ watch(adaModalTerbuka, (terbuka) => {
                             @click="openImportModal"
                             class="inline-flex items-center justify-center gap-1.5 sm:gap-2 min-h-[44px] sm:min-h-0 px-3 sm:px-4 xl:px-5 py-2.5 bg-blue-600 border border-transparent rounded-full font-semibold text-xs sm:text-sm text-white text-center leading-tight sm:whitespace-nowrap hover:bg-blue-700 transition ease-in-out duration-150 shadow-sm cursor-pointer sm:flex-none"
                         >
-                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                            <svg
+                                class="w-4 h-4 shrink-0"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+                                />
                             </svg>
                             Impor Kuota
                         </button>
@@ -1460,12 +1866,24 @@ watch(adaModalTerbuka, (terbuka) => {
                                     : alasanGenerateTutup
                             "
                             :aria-describedby="
-                                !generateDibuka ? 'ket-generate-tutup' : undefined
+                                !generateDibuka
+                                    ? 'ket-generate-tutup'
+                                    : undefined
                             "
                             class="inline-flex items-center justify-center gap-1.5 sm:gap-2 min-h-[44px] sm:min-h-0 px-3 sm:px-4 xl:px-5 py-2.5 bg-emerald-600 border border-transparent rounded-full font-semibold text-xs sm:text-sm text-white text-center leading-tight sm:whitespace-nowrap hover:bg-emerald-700 transition ease-in-out duration-150 shadow-sm cursor-pointer sm:flex-none disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600"
                         >
-                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            <svg
+                                class="w-4 h-4 shrink-0"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                                />
                             </svg>
                             Generate Saldo {{ tahunTujuanGenerate }}
                         </button>
@@ -1476,8 +1894,19 @@ watch(adaModalTerbuka, (terbuka) => {
                             :href="exportUrl"
                             class="col-span-2 sm:col-span-1 sm:flex-none min-h-[44px] sm:min-h-0 sm:whitespace-nowrap bg-green-700 hover:bg-green-800 text-white px-3 sm:px-4 xl:px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition inline-flex items-center justify-center gap-2"
                         >
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                class="w-4 h-4 shrink-0"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                                />
                             </svg>
                             Export Excel {{ tahunAktif }}
                         </a>
@@ -1498,43 +1927,82 @@ watch(adaModalTerbuka, (terbuka) => {
 
                 <!-- KPI Cards (versi putih). Angka diambil dari prop 'kpi'
                  backend, dihitung dari SELURUH data hasil filter. -->
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-4 mb-4 sm:mb-6">
-                    <div class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between">
-                        <h4 class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2">
+                <div
+                    class="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-4 mb-4 sm:mb-6"
+                >
+                    <div
+                        class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between"
+                    >
+                        <h4
+                            class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2"
+                        >
                             Total Pegawai
                         </h4>
                         <div class="flex items-baseline gap-1">
-                            <span class="text-xl sm:text-2xl font-extrabold text-slate-800">{{ kpiTotalPegawai }}</span>
+                            <span
+                                class="text-xl sm:text-2xl font-extrabold text-slate-800"
+                                >{{ kpiTotalPegawai }}</span
+                            >
                         </div>
                     </div>
 
-                    <div class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between">
-                        <h4 class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2">
+                    <div
+                        class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between"
+                    >
+                        <h4
+                            class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2"
+                        >
                             Rata-Rata Terpakai
                         </h4>
                         <div class="flex items-baseline gap-1.5">
-                            <span class="text-xl sm:text-2xl font-extrabold text-rose-500">{{ kpiRataRataTerpakai }}</span>
-                            <span class="text-xs sm:text-sm font-medium text-slate-400">hari</span>
+                            <span
+                                class="text-xl sm:text-2xl font-extrabold text-rose-500"
+                                >{{ kpiRataRataTerpakai }}</span
+                            >
+                            <span
+                                class="text-xs sm:text-sm font-medium text-slate-400"
+                                >hari</span
+                            >
                         </div>
                     </div>
 
-                    <div class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between">
-                        <h4 class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2">
+                    <div
+                        class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between"
+                    >
+                        <h4
+                            class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2"
+                        >
                             Rata-Rata Saldo Akhir
                         </h4>
                         <div class="flex items-baseline gap-1.5">
-                            <span class="text-xl sm:text-2xl font-extrabold text-emerald-500">{{ kpiRataRataSaldoAkhir }}</span>
-                            <span class="text-xs sm:text-sm font-medium text-slate-400">hari</span>
+                            <span
+                                class="text-xl sm:text-2xl font-extrabold text-emerald-500"
+                                >{{ kpiRataRataSaldoAkhir }}</span
+                            >
+                            <span
+                                class="text-xs sm:text-sm font-medium text-slate-400"
+                                >hari</span
+                            >
                         </div>
                     </div>
 
-                    <div class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between">
-                        <h4 class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2">
+                    <div
+                        class="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm flex flex-col justify-between"
+                    >
+                        <h4
+                            class="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1.5 sm:mb-2"
+                        >
                             Akumulasi Penuh (12/12)
                         </h4>
                         <div class="flex items-baseline gap-1.5">
-                            <span class="text-xl sm:text-2xl font-extrabold text-blue-600">{{ kpiAkumulasiPenuh }}</span>
-                            <span class="text-xs sm:text-sm font-medium text-slate-400">orang</span>
+                            <span
+                                class="text-xl sm:text-2xl font-extrabold text-blue-600"
+                                >{{ kpiAkumulasiPenuh }}</span
+                            >
+                            <span
+                                class="text-xs sm:text-sm font-medium text-slate-400"
+                                >orang</span
+                            >
                         </div>
                     </div>
                 </div>
@@ -1556,10 +2024,24 @@ watch(adaModalTerbuka, (terbuka) => {
                     class="grid grid-cols-[minmax(0,1fr)_auto] gap-2 mb-3 lg:flex lg:items-center"
                 >
                     <!-- Search (dengan tombol hapus saat ada isi) -->
-                    <div class="relative order-1 min-w-0 lg:min-w-[12rem] lg:flex-1">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    <div
+                        class="relative order-1 min-w-0 lg:min-w-[12rem] lg:flex-1"
+                    >
+                        <div
+                            class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+                        >
+                            <svg
+                                class="w-4 h-4 text-gray-400"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                                />
                             </svg>
                         </div>
                         <input
@@ -1570,7 +2052,11 @@ watch(adaModalTerbuka, (terbuka) => {
                             placeholder="Cari nama / NIP..."
                             aria-label="Cari nama atau NIP pegawai"
                             class="w-full min-h-[44px] lg:min-h-[40px] pl-9 pr-10 py-2 text-base sm:text-sm border focus:border-emerald-500 focus:ring-emerald-500 rounded-lg shadow-sm bg-white"
-                            :class="search ? 'border-emerald-500' : 'border-gray-300'"
+                            :class="
+                                search
+                                    ? 'border-emerald-500'
+                                    : 'border-gray-300'
+                            "
                         />
                         <button
                             v-if="search"
@@ -1579,8 +2065,18 @@ watch(adaModalTerbuka, (terbuka) => {
                             aria-label="Hapus pencarian"
                             class="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 cursor-pointer"
                         >
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            <svg
+                                class="w-4 h-4"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M6 18L18 6M6 6l12 12"
+                                />
                             </svg>
                         </button>
                     </div>
@@ -1588,10 +2084,24 @@ watch(adaModalTerbuka, (terbuka) => {
                     <!-- Filter Tahun (ikon kalender). Default = tahun
                          berjalan. Opsi dari daftarTahunPilihan. Di HP
                          labelnya hanya angka tahun. -->
-                    <div class="relative order-2 w-32 sm:w-40 lg:order-3 lg:flex-none">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    <div
+                        class="relative order-2 w-32 sm:w-40 lg:order-3 lg:flex-none"
+                    >
+                        <div
+                            class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+                        >
+                            <svg
+                                class="w-4 h-4 text-gray-400"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                />
                             </svg>
                         </div>
 
@@ -1606,17 +2116,30 @@ watch(adaModalTerbuka, (terbuka) => {
                         >
                             <span class="block truncate">
                                 <span class="sm:hidden">{{ tahunAktif }}</span>
-                                <span class="hidden sm:inline">Tahun {{ tahunAktif }}</span>
+                                <span class="hidden sm:inline"
+                                    >Tahun {{ tahunAktif }}</span
+                                >
                             </span>
                         </button>
 
-                        <span class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                        <span
+                            class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
+                        >
                             <svg
                                 class="w-3.5 h-3.5 text-gray-500 transition-transform"
-                                :class="{ 'rotate-180': dropdownTerbuka === 'tahun' }"
-                                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                :class="{
+                                    'rotate-180': dropdownTerbuka === 'tahun',
+                                }"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
                             >
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
                             </svg>
                         </span>
 
@@ -1625,7 +2148,10 @@ watch(adaModalTerbuka, (terbuka) => {
                             role="listbox"
                             class="absolute right-0 top-full z-30 mt-1 max-h-60 w-full min-w-[8rem] overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
                         >
-                            <li v-for="tahun in daftarTahunPilihan" :key="tahun">
+                            <li
+                                v-for="tahun in daftarTahunPilihan"
+                                :key="tahun"
+                            >
                                 <button
                                     type="button"
                                     role="option"
@@ -1645,10 +2171,24 @@ watch(adaModalTerbuka, (terbuka) => {
                     </div>
 
                     <!-- Filter Kelompok Substansi (HP: baris sendiri penuh) -->
-                    <div class="relative order-3 col-span-2 min-w-0 lg:order-2 lg:col-span-1 lg:max-w-[28rem] lg:flex-[1.3]">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                    <div
+                        class="relative order-3 col-span-2 min-w-0 lg:order-2 lg:col-span-1 lg:max-w-[28rem] lg:flex-[1.3]"
+                    >
+                        <div
+                            class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+                        >
+                            <svg
+                                class="w-4 h-4 text-gray-400"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+                                />
                             </svg>
                         </div>
 
@@ -1666,16 +2206,30 @@ watch(adaModalTerbuka, (terbuka) => {
                                     : 'border-gray-300 text-gray-600'
                             "
                         >
-                            <span class="block truncate">{{ labelKelompok }}</span>
+                            <span class="block truncate">{{
+                                labelKelompok
+                            }}</span>
                         </button>
 
-                        <span class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                        <span
+                            class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none"
+                        >
                             <svg
                                 class="w-3.5 h-3.5 text-gray-500 transition-transform"
-                                :class="{ 'rotate-180': dropdownTerbuka === 'kelompok' }"
-                                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                :class="{
+                                    'rotate-180':
+                                        dropdownTerbuka === 'kelompok',
+                                }"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
                             >
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M19 9l-7 7-7-7"
+                                ></path>
                             </svg>
                         </span>
 
@@ -1700,7 +2254,10 @@ watch(adaModalTerbuka, (terbuka) => {
                                     Semua Kelompok Substansi
                                 </button>
                             </li>
-                            <li v-for="kelompok in daftarKelompokSubstansi" :key="kelompok">
+                            <li
+                                v-for="kelompok in daftarKelompokSubstansi"
+                                :key="kelompok"
+                            >
                                 <button
                                     type="button"
                                     role="option"
@@ -1732,7 +2289,9 @@ watch(adaModalTerbuka, (terbuka) => {
                         :key="chip.key"
                         class="inline-flex max-w-full items-center gap-1.5 bg-emerald-50 text-emerald-700 font-semibold pl-3 pr-2 py-1 rounded-full"
                     >
-                        <span class="min-w-0 break-words">{{ chip.label }}</span>
+                        <span class="min-w-0 break-words">{{
+                            chip.label
+                        }}</span>
                         <button
                             type="button"
                             @click="chip.clear()"
@@ -1758,10 +2317,24 @@ watch(adaModalTerbuka, (terbuka) => {
                     v-if="!punyaData"
                     class="rounded-lg border border-slate-200 bg-white px-4 sm:px-6 py-12 sm:py-14"
                 >
-                    <div class="flex flex-col items-center justify-center text-center gap-3">
-                        <div class="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center">
-                            <svg class="w-7 h-7 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                    <div
+                        class="flex flex-col items-center justify-center text-center gap-3"
+                    >
+                        <div
+                            class="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center"
+                        >
+                            <svg
+                                class="w-7 h-7 text-slate-400"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="1.5"
+                                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                ></path>
                             </svg>
                         </div>
                         <p class="text-sm font-semibold text-gray-600 max-w-sm">
@@ -1774,8 +2347,18 @@ watch(adaModalTerbuka, (terbuka) => {
                             @click="resetFilters"
                             class="mt-1 inline-flex items-center gap-1.5 min-h-[40px] px-4 py-2 bg-white border border-gray-300 rounded-full text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:text-gray-800 transition-colors"
                         >
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            <svg
+                                class="w-3.5 h-3.5"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                                ></path>
                             </svg>
                             Reset Filter
                         </button>
@@ -1787,23 +2370,44 @@ watch(adaModalTerbuka, (terbuka) => {
                      nama + Saldo Akhir di atas, angka rincian di tengah
                      (grid 4 kolom), tombol aksi di bawah.
                      EDIT INLINE: ketuk salah satu angka yang bisa diedit,
-                     lalu Sisa N-2, Tgh, Sisa N-1, Hak, dan Terpakai berubah
-                     menjadi input; Bawaan, Sisa tahun ini, Total, dan Saldo
-                     Akhir menampilkan pratinjau langsung.
+                     lalu Sisa N-2, Tgh, Sisa N-1, dan Hak berubah
+                     menjadi input; Bawaan, Sisa tahun ini, Total, Terpakai, dan
+                     Saldo Akhir menampilkan pratinjau langsung.
                      Ikon pensil di label = kotak bisa diedit (kotak yang
                      punya 'field' di getStatKartu).
-                     Tanda * = Terpakai dikoreksi manual Admin HR. -->
+                     [TERPAKAI DIKUNCI] Ikon gembok di label Terpakai = hanya
+                     tampil; ubah per bulan di Rekap Laporan (ada tautannya).
+                     Tanda * = Terpakai dikoreksi Admin HR.
+                     SOROT RUMUS: ketuk Sisa tahun ini, Bawaan, Total, Terpakai,
+                     atau Saldo Akhir -> kotak sumbernya terisi warna yang sama
+                     dan diberi tanda + / −, kotak lain meredup. Sorotan TETAP
+                     menyala saat kotak sumber diketuk untuk diedit.
+                     SOROT DAMPAK EDIT: saat sebuah kotak difokus untuk diedit,
+                     kotak yang ikut berubah diberi cincin oranye + tanda Δ. -->
                 <p
                     v-if="punyaData"
                     class="mb-2 text-[11px] leading-relaxed text-slate-500 lg:hidden"
                 >
-                    <span class="font-semibold text-orange-600">Tgh</span> =
-                    cuti ditangguhkan. Tgh tahun {{ tahunAktif }} sudah
-                    termasuk dalam Terpakai.
+                    <span class="font-semibold text-slate-700">Tgh</span> = cuti
+                    ditangguhkan. Tgh tahun {{ tahunAktif }} sudah termasuk
+                    dalam Terpakai.
                     <span class="font-semibold text-amber-600">*</span> =
-                    Terpakai dikoreksi manual Admin HR.
-                    <span class="inline-block align-middle"><IkonPensil /></span>
+                    Terpakai dikoreksi Admin HR di Rekap Laporan.
+                    <span class="inline-block align-middle"
+                        ><IkonPensil
+                    /></span>
                     = bisa diedit, ketuk angkanya.
+                    <span class="inline-block align-middle"
+                        ><IkonGembok
+                    /></span>
+                    = Terpakai dikunci, ubah di Rekap Laporan. Ketuk Sisa
+                    {{ tahunAktif }}, Bawaan, Total, Terpakai, atau Saldo Akhir
+                    untuk menyorot kolom sumber rumusnya.
+                    <span
+                        class="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 align-middle text-[11px] font-bold leading-none text-white"
+                        >Δ</span
+                    >
+                    = ikut berubah saat kotak yang sedang diedit diubah.
                 </p>
                 <div
                     v-if="punyaData"
@@ -1820,44 +2424,87 @@ watch(adaModalTerbuka, (terbuka) => {
                         "
                     >
                         <div class="flex items-start gap-2.5">
-                            <span class="flex h-7 min-w-[28px] shrink-0 items-center justify-center rounded-full bg-slate-100 px-1.5 text-xs font-bold text-slate-600">
+                            <span
+                                class="flex h-7 min-w-[28px] shrink-0 items-center justify-center rounded-full bg-slate-100 px-1.5 text-xs font-bold text-slate-600"
+                            >
                                 {{ (dataPegawai.from ?? 1) + index }}
                             </span>
 
                             <div class="min-w-0 flex-1">
-                                <p class="break-words text-sm font-bold leading-snug text-slate-800">
+                                <p
+                                    class="break-words text-sm font-bold leading-snug text-slate-800"
+                                >
                                     {{ pegawai.nama }}
                                 </p>
-                                <p class="mt-0.5 break-words text-[11px] leading-snug text-slate-500">
+                                <p
+                                    class="mt-0.5 break-words text-[11px] leading-snug text-slate-500"
+                                >
                                     {{ getKelompok(pegawai) }}
                                 </p>
                             </div>
 
                             <div class="shrink-0 text-center">
-                                <p class="text-[10px] font-bold uppercase leading-tight tracking-wide text-slate-500">
+                                <p
+                                    class="text-[10px] font-bold uppercase leading-tight tracking-wide text-slate-500"
+                                >
                                     Saldo Akhir
                                 </p>
-                                <span class="mt-1 inline-block min-w-[40px] rounded-md border border-slate-900 bg-slate-800 px-2.5 py-1 text-sm font-extrabold text-white shadow-sm">
+                                <!-- Saldo Akhir: ketuk untuk menyorot rumus -->
+                                <button
+                                    type="button"
+                                    data-rumus-area
+                                    @click="toggleRumus(pegawai, 'saldo')"
+                                    :aria-pressed="
+                                        rumusDibuka(pegawai, 'saldo')
+                                    "
+                                    :title="KETERANGAN_KLIK_RUMUS"
+                                    class="mt-1 inline-block min-w-[40px] cursor-pointer rounded-md border px-2.5 py-1 text-sm font-extrabold shadow-sm transition"
+                                    :class="
+                                        kelasSel(
+                                            pegawai,
+                                            'saldo',
+                                            WARNA_HASIL.saldo.dasar,
+                                        )
+                                    "
+                                >
                                     {{ nilaiSaldoAkhir(pegawai) }}
-                                </span>
+                                </button>
                             </div>
                         </div>
 
-                        <div class="mt-3 grid grid-cols-4 gap-x-2 gap-y-2.5 border-t border-slate-100 pt-3">
+                        <div
+                            class="mt-3 grid grid-cols-4 gap-x-2 gap-y-2.5 border-t border-slate-100 pt-3"
+                        >
+                            <!-- data-rumus-area: klik di dalam kotak ini TIDAK
+                                 menutup sorotan rumus (kotak berganti jadi
+                                 input saat diketuk). -->
                             <div
                                 v-for="stat in getStatKartu(pegawai)"
                                 :key="stat.key"
-                                class="flex flex-col items-center gap-1 text-center"
+                                data-rumus-area
+                                class="relative flex flex-col items-center gap-1 rounded-lg p-0.5 text-center transition"
+                                :class="
+                                    kelasRedup(pegawai, kunciRumus(stat.key))
+                                "
                                 :title="stat.title"
                             >
-                                <!-- Label + ikon pensil (hanya untuk kotak
-                                     yang bisa diedit, yaitu punya 'field') -->
+                                <!-- Tanda + / − untuk kolom sumber rumus, atau
+                                     Δ untuk kolom yang ikut berubah saat edit -->
+                                <LencanaOp
+                                    :p="pegawai"
+                                    :kunci="kunciRumus(stat.key)"
+                                    atas="-top-2"
+                                />
+
+                                <!-- Label + ikon pensil (kotak yang bisa
+                                     diedit) atau ikon gembok (kotak dikunci) -->
                                 <span
                                     class="inline-flex items-center justify-center gap-0.5 text-[10px] font-semibold leading-tight"
                                     :class="stat.labelKelas"
                                 >
                                     {{ stat.label }}
                                     <IkonPensil v-if="stat.field" />
+                                    <IkonGembok v-else-if="stat.kunci" />
                                 </span>
 
                                 <!-- Kotak yang bisa diedit: ketuk -> semua kotak
@@ -1867,17 +2514,66 @@ watch(adaModalTerbuka, (terbuka) => {
                                     besar
                                     :field="stat.field"
                                     :model-value="draft[stat.field]"
-                                    @update:model-value="ubahDraft(stat.field, $event)"
+                                    @update:model-value="
+                                        ubahDraft(stat.field, $event)
+                                    "
                                     :nilai="stat.nilai"
                                     :editing="isEditing(pegawai)"
                                     :bintang="stat.bintang"
                                     :label="stat.label"
                                     :max="stat.max"
                                     :title="stat.title"
-                                    :kelas="stat.kelas"
+                                    :kelas="
+                                        kelasSel(
+                                            pegawai,
+                                            kunciRumus(stat.key),
+                                            stat.kelas,
+                                        )
+                                    "
+                                    :sorot="
+                                        kelasSorot(
+                                            pegawai,
+                                            kunciRumus(stat.key),
+                                        )
+                                    "
                                     @mulai="mulaiEdit(pegawai, stat.field)"
                                     @simpan="simpanSaldo(pegawai)"
                                 />
+                                <!-- Hasil hitungan yang bisa diklik: Sisa N,
+                                     Bawaan, Total, Terpakai (dikunci) -->
+                                <button
+                                    v-else-if="KOLOM_RUMUS_KARTU[stat.key]"
+                                    type="button"
+                                    data-rumus-area
+                                    @click="
+                                        toggleRumus(
+                                            pegawai,
+                                            KOLOM_RUMUS_KARTU[stat.key],
+                                        )
+                                    "
+                                    :aria-pressed="
+                                        rumusDibuka(
+                                            pegawai,
+                                            KOLOM_RUMUS_KARTU[stat.key],
+                                        )
+                                    "
+                                    :title="stat.title || KETERANGAN_KLIK_RUMUS"
+                                    class="inline-block min-w-[36px] cursor-pointer rounded-md border px-2 py-1 text-xs font-bold transition"
+                                    :class="
+                                        kelasSel(
+                                            pegawai,
+                                            kunciRumus(stat.key),
+                                            stat.kelas,
+                                        )
+                                    "
+                                >
+                                    {{ stat.nilai
+                                    }}<sup
+                                        v-if="stat.bintang"
+                                        class="ml-0.5 font-black text-amber-600"
+                                        >*</sup
+                                    >
+                                </button>
                                 <span
                                     v-else
                                     class="inline-block min-w-[36px] rounded-md border px-2 py-1 text-xs font-bold"
@@ -1888,52 +2584,80 @@ watch(adaModalTerbuka, (terbuka) => {
                             </div>
                         </div>
 
-                        <!-- Kembalikan Terpakai ke angka sistem + error validasi
-                             (hanya saat baris ini diedit) -->
+                        <!-- Info Terpakai dikunci + error validasi (hanya saat
+                             baris ini diedit). -->
                         <div
                             v-if="isEditing(pegawai)"
+                            data-rumus-area
                             class="mt-3 space-y-2 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2"
                         >
-                            <button
-                                v-if="!draft.pakai_sistem"
-                                type="button"
-                                @click="kembalikanTerpakaiKeSistem"
-                                class="min-h-[32px] text-xs font-medium text-amber-800 underline"
-                            >
-                                ↺ Kembalikan Terpakai ke angka sistem ({{
-                                    getTerpakaiSistemTampil(pegawai)
-                                }}
-                                hari)
-                            </button>
-                            <p v-else class="text-xs text-amber-800">
-                                Terpakai mengikuti angka sistem ({{
-                                    getTerpakaiSistemTampil(pegawai)
-                                }}
-                                hari).
+                            <p class="text-xs text-amber-800">
+                                Terpakai dikunci di sini.
+                                <Link
+                                    :href="urlRekapLaporan(pegawai)"
+                                    class="font-semibold underline"
+                                    >Ubah per bulan di Rekap Laporan</Link
+                                >.
                             </p>
                             <ul
                                 v-if="daftarErrorEdit.length > 0"
                                 class="space-y-0.5 text-[11px] text-red-600"
                             >
-                                <li v-for="(pesan, i) in daftarErrorEdit" :key="i">
+                                <li
+                                    v-for="(pesan, i) in daftarErrorEdit"
+                                    :key="i"
+                                >
                                     {{ pesan }}
                                 </li>
                             </ul>
                         </div>
 
                         <!-- Rumus ringkas + tombol aksi dalam satu baris -->
-                        <div class="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
-                            <p class="min-w-0 text-[11px] leading-snug text-slate-500">
+                        <div
+                            class="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3"
+                        >
+                            <p
+                                class="min-w-0 text-[11px] leading-snug text-slate-500"
+                            >
                                 Total
-                                <span class="font-semibold text-slate-700">{{ nilaiTotal(pegawai) }}</span>
+                                <span class="font-semibold text-slate-700">{{
+                                    nilaiTotal(pegawai)
+                                }}</span>
                                 &minus; Terpakai
-                                <span class="font-semibold text-slate-700">{{ nilaiTerpakai(pegawai) }}</span>
+                                <span class="font-semibold text-slate-700">{{
+                                    nilaiTerpakai(pegawai)
+                                }}</span>
                                 = Saldo
-                                <span class="font-bold text-slate-800">{{ nilaiSaldoAkhir(pegawai) }}</span>
+                                <span class="font-bold text-slate-800">{{
+                                    nilaiSaldoAkhir(pegawai)
+                                }}</span>
                             </p>
 
-                            <!-- Mode tampil: Riwayat -->
-                            <div v-if="!isEditing(pegawai)" class="flex shrink-0 items-center gap-1.5">
+                            <!-- Mode tampil: Riwayat + ubah Terpakai -->
+                            <div
+                                v-if="!isEditing(pegawai)"
+                                class="flex shrink-0 items-center gap-1.5"
+                            >
+                                <Link
+                                    :href="urlRekapLaporan(pegawai)"
+                                    class="inline-flex min-h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-full border border-gray-300 bg-white px-2.5 py-1.5 text-gray-600 shadow-sm transition hover:bg-gray-50 hover:text-gray-900"
+                                    title="Ubah Terpakai per bulan di Rekap Laporan"
+                                    aria-label="Ubah Terpakai di Rekap Laporan"
+                                >
+                                    <svg
+                                        class="h-4 w-4"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                        />
+                                    </svg>
+                                </Link>
                                 <button
                                     @click="openDetailModal(pegawai)"
                                     type="button"
@@ -1941,14 +2665,27 @@ watch(adaModalTerbuka, (terbuka) => {
                                     title="Lihat Rincian & Riwayat"
                                     aria-label="Lihat Rincian dan Riwayat"
                                 >
-                                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    <svg
+                                        class="h-4 w-4"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                                        />
                                     </svg>
                                 </button>
                             </div>
 
                             <!-- Mode edit: Batal + Simpan -->
-                            <div v-else class="flex shrink-0 items-center gap-1.5">
+                            <div
+                                v-else
+                                class="flex shrink-0 items-center gap-1.5"
+                            >
                                 <button
                                     type="button"
                                     @click="batalEdit"
@@ -1963,7 +2700,11 @@ watch(adaModalTerbuka, (terbuka) => {
                                     :disabled="isSavingSaldo || !isDirty"
                                     class="inline-flex min-h-[40px] cursor-pointer items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                    {{ isSavingSaldo ? "Menyimpan..." : "Simpan" }}
+                                    {{
+                                        isSavingSaldo
+                                            ? "Menyimpan..."
+                                            : "Simpan"
+                                    }}
                                 </button>
                             </div>
                         </div>
@@ -1977,131 +2718,232 @@ watch(adaModalTerbuka, (terbuka) => {
           min-w tetap supaya sejajar; Saldo Akhir diberi background gelap
           sebagai fokus utama.
 
+
+          HEADER FREEZE: wadah tabel punya tinggi maksimal dan scroll
+          sendiri (overflow-auto + max-h), sehingga header 'sticky top-0'
+          tetap terlihat saat baris digulir. Kolom No & Nama menempel di
+          kiri DAN header-nya menempel di atas (z-30, di atas sel isi z-10).
+
+
           URUTAN KOLOM: No, Nama, Sisa N-2, Tgh N-2, Sisa N-1, Tgh N-1,
           Sisa N (hitungan otomatis), Tgh N (bagian dari Terpakai), Bawaan, Hak,
-          Total, Terpakai, Saldo Akhir, Aksi. Kolom Sisa N dan Tgh N
-          diletakkan tepat di samping Tgh tahun lalu supaya pasangan
-          "Sisa + Tgh" tiap tahun berkumpul.
+          Total, Terpakai, Saldo Akhir, Aksi.
+
 
           ATURAN Tgh: Tgh N (tahun yang dilihat) tetap tercatat dan SUDAH
-          TERMASUK dalam Terpakai N (Terpakai = cuti disetujui + Tgh N), jadi
+          TERMASUK dalam Terpakai N (Terpakai = cuti terpakai + Tgh N), jadi
           tidak dikurangkan lagi dari Sisa N dan Saldo Akhir.
           Tgh N-1 MENAMBAH Total Tersedia. Tgh N-2 hanya catatan Admin HR.
 
+
           PENANDA KOLOM BISA DIEDIT: ikon pensil kecil di header kolom
-          Sisa N-2, Tgh N-2, Sisa N-1, Tgh N-1, Tgh N, Hak, dan Terpakai.
+          Sisa N-2, Tgh N-2, Sisa N-1, Tgh N-1, Tgh N, dan Hak.
           Kolom hitungan otomatis (Sisa N, Bawaan, Total, Saldo Akhir) tidak
           diberi ikon.
+          [TERPAKAI DIKUNCI] Kolom Terpakai diberi ikon GEMBOK: hanya tampil,
+          diubah per bulan di Rekap Laporan (ikon tautan di sebelah angkanya).
+
+
+          WARNA KOLOM: kolom input (Sisa N-2, Tgh, Sisa N-1, Hak) putih
+          netral. Hanya kolom hasil yang berwarna: Sisa N (sky), Bawaan
+          (emerald), Total (indigo), Terpakai (rose), Saldo Akhir (gelap).
+
+
+          SOROT RUMUS: angka Sisa N, Bawaan, Total, Terpakai, dan Saldo Akhir
+          bisa diklik. Angka yang diklik terisi penuh, kolom sumber rumusnya
+          terisi warna yang sama dan diberi tanda + / −, kolom lain meredup,
+          dan header kolom sumber ikut berwarna. Sorotan TETAP menyala saat
+          kolom sumber (mis. Hak) diklik untuk diedit, dan ditutup oleh
+          Simpan / Batal / Esc / klik di luar. Mengklik angka hasil juga
+          melepas seleksi (sorot dampak) kotak input sebelumnya.
+
+
+          SOROT DAMPAK EDIT: saat sebuah kotak input difokus (klik atau Tab),
+          kolom yang ikut berubah diberi cincin oranye + lencana Δ, header-nya
+          berwarna oranye, dan kolom lain meredup. Berjalan bersamaan dengan
+          sorot rumus.
+
 
           EDIT INLINE: klik salah satu kapsul yang bisa diedit (Sisa, Tgh,
-          Hak, Terpakai) -> semua kapsul editable di baris itu menjadi input
-          seukuran kapsul. Sisa N, Bawaan, Total, dan Saldo Akhir menampilkan
-          pratinjau langsung. Kolom Aksi berubah jadi Simpan (centang) dan
-          Batal (X). Enter = Simpan, Esc = Batal.
+          Hak) -> semua kapsul editable di baris itu menjadi input
+          seukuran kapsul. Sisa N, Bawaan, Total, Terpakai, dan Saldo Akhir
+          menampilkan pratinjau langsung. Kolom Aksi berubah jadi Simpan
+          (centang) dan Batal (X). Enter = Simpan, Esc = Batal.
+
 
           Tampilan disamakan dengan Rekap Laporan: kartu ber-border membulat,
           kolom No & Nama menempel (sticky) di kiri saat tabel digeser, efek
-          hover ungu. Tabel 'w-full' dan rapat ('px-2 py-3') — hanya bisa
-          digeser kalau layar tidak muat. Di layar kecil diganti kartu di atas.
+          hover ungu. Tabel 'w-full' dan rapat ('px-2 py-3'). Di layar kecil
+          diganti kartu di atas.
         -->
                 <div
                     v-if="punyaData"
-                    class="hidden lg:block overflow-x-auto rounded-lg border border-slate-200 bg-white"
+                    class="hidden lg:block overflow-auto max-h-[calc(100dvh-10rem)] rounded-lg border border-slate-200 bg-white"
                 >
                     <table class="w-full text-left border-collapse">
                         <thead>
                             <tr
                                 class="bg-slate-50 border-b border-slate-200 text-[10px] leading-tight text-slate-500 uppercase tracking-wide font-bold align-middle"
                             >
-                                <th class="sticky left-0 z-20 bg-slate-50 w-12 min-w-[3rem] px-2 py-3 text-center border-r border-slate-200">
+                                <th
+                                    class="sticky left-0 top-0 z-30 bg-slate-50 w-12 min-w-[3rem] px-2 py-3 text-center border-r border-slate-200 shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                >
                                     No
                                 </th>
-                                <th class="sticky left-12 z-20 bg-slate-50 min-w-[190px] px-3 py-3 border-r-2 border-slate-300 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">
+                                <th
+                                    class="sticky left-12 top-0 z-30 bg-slate-50 min-w-[190px] px-3 py-3 border-r-2 border-slate-300 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08),inset_0_-1px_0_0_#e2e8f0]"
+                                >
                                     Nama Pegawai
                                 </th>
                                 <!-- Sisa N-2 (bisa diedit) -->
-                                <th class="px-2 py-3 text-center" :title="KETERANGAN_BISA_DIEDIT">
-                                    <span class="inline-flex items-center justify-center gap-1">
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('sisa_n2')"
+                                    :title="KETERANGAN_BISA_DIEDIT"
+                                >
+                                    <span
+                                        class="inline-flex items-center justify-center gap-1"
+                                    >
                                         Sisa {{ tahunAktif - 2 }}
                                         <IkonPensil />
                                     </span>
                                 </th>
                                 <!-- Tgh N-2 (bisa diedit, hanya catatan) -->
                                 <th
-                                    class="px-2 py-3 text-center text-orange-600"
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('tgh_n2')"
                                     :title="`${KETERANGAN_TGH_N2}. ${KETERANGAN_BISA_DIEDIT}`"
                                 >
-                                    <span class="inline-flex items-center justify-center gap-1">
-                                        Tgh '{{ (tahunAktif - 2).toString().slice(-2) }}
+                                    <span
+                                        class="inline-flex items-center justify-center gap-1"
+                                    >
+                                        Tgh '{{
+                                            (tahunAktif - 2)
+                                                .toString()
+                                                .slice(-2)
+                                        }}
                                         <IkonPensil />
                                     </span>
                                 </th>
                                 <!-- Sisa N-1 (bisa diedit) -->
-                                <th class="px-2 py-3 text-center" :title="KETERANGAN_BISA_DIEDIT">
-                                    <span class="inline-flex items-center justify-center gap-1">
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('sisa_n1')"
+                                    :title="KETERANGAN_BISA_DIEDIT"
+                                >
+                                    <span
+                                        class="inline-flex items-center justify-center gap-1"
+                                    >
                                         Sisa {{ tahunAktif - 1 }}
                                         <IkonPensil />
                                     </span>
                                 </th>
                                 <!-- Tgh N-1 (bisa diedit, menambah Total Tersedia) -->
                                 <th
-                                    class="px-2 py-3 text-center text-orange-600"
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('tgh_n1')"
                                     :title="`${KETERANGAN_TGH_N1}. ${KETERANGAN_BISA_DIEDIT}`"
                                 >
-                                    <span class="inline-flex items-center justify-center gap-1">
-                                        Tgh '{{ (tahunAktif - 1).toString().slice(-2) }}
+                                    <span
+                                        class="inline-flex items-center justify-center gap-1"
+                                    >
+                                        Tgh '{{
+                                            (tahunAktif - 1)
+                                                .toString()
+                                                .slice(-2)
+                                        }}
                                         <IkonPensil />
                                     </span>
                                 </th>
                                 <!-- Sisa N: hitungan otomatis (Hak - Terpakai),
-                                     TIDAK bisa diedit, jadi tanpa ikon pensil -->
-                                <th class="px-2 py-3 text-center" :title="KETERANGAN_SISA_TAHUN_INI">
+                                     TIDAK bisa diedit, jadi tanpa ikon pensil.
+                                     Angkanya bisa diklik untuk menyorot rumus. -->
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('sisa_n0')"
+                                    :title="KETERANGAN_SISA_TAHUN_INI"
+                                >
                                     Sisa {{ tahunAktif }}
                                 </th>
                                 <!-- Ditangguhkan tahun ini (tetap tercatat, sudah
                                      termasuk dalam Terpakai): tepat di samping
                                      Sisa tahun ini (bisa diedit) -->
-                                <th class="px-2 py-3 text-center text-orange-600">
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('tgh_n0')"
+                                >
                                     <span
                                         class="inline-flex items-center justify-center gap-1"
                                         :title="KETERANGAN_BISA_DIEDIT"
                                     >
-                                        <span>Tgh '{{ tahunAktif.toString().slice(-2) }}</span>
+                                        <span
+                                            >Tgh '{{
+                                                tahunAktif.toString().slice(-2)
+                                            }}</span
+                                        >
                                         <IkonPensil />
                                         <span
                                             role="img"
                                             tabindex="0"
                                             :title="KETERANGAN_TGH_TAHUN_INI"
-                                            :aria-label="KETERANGAN_TGH_TAHUN_INI"
-                                            class="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-orange-400 text-[9px] font-bold normal-case leading-none text-orange-600"
+                                            :aria-label="
+                                                KETERANGAN_TGH_TAHUN_INI
+                                            "
+                                            class="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-slate-400 text-[9px] font-bold normal-case leading-none text-slate-500"
                                             >?</span
                                         >
                                     </span>
                                 </th>
-                                <th class="px-2 py-3 text-center">
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('bawaan')"
+                                    :title="KETERANGAN_BAWAAN"
+                                >
                                     Bawaan Eligible {{ tahunAktif }}
                                 </th>
                                 <!-- Hak (bisa diedit) -->
-                                <th class="px-2 py-3 text-center" :title="KETERANGAN_BISA_DIEDIT">
-                                    <span class="inline-flex items-center justify-center gap-1">
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('hak')"
+                                    :title="KETERANGAN_BISA_DIEDIT"
+                                >
+                                    <span
+                                        class="inline-flex items-center justify-center gap-1"
+                                    >
                                         Hak {{ tahunAktif }}
                                         <IkonPensil />
                                     </span>
                                 </th>
-                                <th class="px-2 py-3 text-center">
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('total')"
+                                >
                                     Total Tersedia {{ tahunAktif }}
                                 </th>
-                                <!-- Terpakai (bisa diedit) -->
-                                <th class="px-2 py-3 text-center" :title="KETERANGAN_BISA_DIEDIT">
-                                    <span class="inline-flex items-center justify-center gap-1">
+                                <!-- [TERPAKAI DIKUNCI] ikon gembok: hanya tampil -->
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('terpakai')"
+                                    :title="KETERANGAN_TERPAKAI_DIKUNCI"
+                                >
+                                    <span
+                                        class="inline-flex items-center justify-center gap-1"
+                                    >
                                         Terpakai {{ tahunAktif }}
-                                        <IkonPensil />
+                                        <IkonGembok />
                                     </span>
                                 </th>
-                                <th class="px-2 py-3 text-center text-slate-800">
+                                <th
+                                    class="sticky top-0 z-20 px-2 py-3 text-center transition-colors shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                    :class="kelasHeader('saldo')"
+                                >
                                     Saldo Akhir {{ tahunAktif }}
                                 </th>
-                                <th class="px-2 py-3 text-center min-w-[6.5rem]">Aksi</th>
+                                <th
+                                    class="sticky top-0 z-20 bg-slate-50 px-2 py-3 text-center min-w-[6.5rem] shadow-[inset_0_-1px_0_0_#e2e8f0]"
+                                >
+                                    Aksi
+                                </th>
                             </tr>
                         </thead>
                         <tbody class="text-sm align-middle">
@@ -2138,219 +2980,575 @@ watch(adaModalTerbuka, (terbuka) => {
                                                 : 'bg-white group-hover:bg-violet-50'
                                         "
                                     >
-                                        <div class="font-bold text-slate-800 text-sm">
+                                        <div
+                                            class="font-bold text-slate-800 text-sm"
+                                        >
                                             {{ pegawai.nama }}
                                         </div>
-                                        <div class="text-[11px] text-slate-500 mt-0.5">
+                                        <div
+                                            class="text-[11px] text-slate-500 mt-0.5"
+                                        >
                                             {{ getKelompok(pegawai) }}
                                         </div>
                                     </td>
 
-                                    <!-- Sisa N-2 (EDITABLE, klik angka) -->
-                                    <td class="px-2 py-3 text-center">
-                                        <SelAngka
-                                            field="sisa_n2"
-                                            :model-value="draft.sisa_n2"
-                                            @update:model-value="ubahDraft('sisa_n2', $event)"
-                                            :nilai="getSisaDuaTahunLalu(pegawai)"
-                                            :editing="isEditing(pegawai)"
-                                            :label="`Sisa ${tahunAktif - 2}`"
-                                            :max="12"
-                                            kelas="bg-slate-200 text-slate-700 border-slate-300/80"
-                                            @mulai="mulaiEdit(pegawai, 'sisa_n2')"
-                                            @simpan="simpanSaldo(pegawai)"
+                                    <!-- Sisa N-2 (EDITABLE, klik angka; putih netral).
+                                         Sumber rumus Bawaan. data-rumus-area =
+                                         klik di sini tidak menutup sorotan. -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="sisa_n2"
                                         />
+                                        <div
+                                            data-rumus-area
+                                            class="inline-block rounded-md transition"
+                                            :class="
+                                                kelasRedup(pegawai, 'sisa_n2')
+                                            "
+                                        >
+                                            <SelAngka
+                                                field="sisa_n2"
+                                                :model-value="draft.sisa_n2"
+                                                @update:model-value="
+                                                    ubahDraft('sisa_n2', $event)
+                                                "
+                                                :nilai="
+                                                    getSisaDuaTahunLalu(pegawai)
+                                                "
+                                                :editing="isEditing(pegawai)"
+                                                :label="`Sisa ${tahunAktif - 2}`"
+                                                :max="12"
+                                                :kelas="
+                                                    kelasSel(
+                                                        pegawai,
+                                                        'sisa_n2',
+                                                        KELAS_INPUT_NETRAL,
+                                                    )
+                                                "
+                                                :sorot="
+                                                    kelasSorot(
+                                                        pegawai,
+                                                        'sisa_n2',
+                                                    )
+                                                "
+                                                @mulai="
+                                                    mulaiEdit(
+                                                        pegawai,
+                                                        'sisa_n2',
+                                                    )
+                                                "
+                                                @simpan="simpanSaldo(pegawai)"
+                                            />
+                                        </div>
                                     </td>
 
-                                    <!-- Ditangguhkan N-2 (Oranye, EDITABLE):
+                                    <!-- Ditangguhkan N-2 (netral, EDITABLE):
                                          hanya catatan, tidak memengaruhi saldo -->
-                                    <td class="px-2 py-3 text-center">
-                                        <SelAngka
-                                            field="tgh_n2"
-                                            :model-value="draft.tgh_n2"
-                                            @update:model-value="ubahDraft('tgh_n2', $event)"
-                                            :nilai="getSisaDitangguhkanN2(pegawai)"
-                                            :editing="isEditing(pegawai)"
-                                            :label="`Tgh ${tahunAktif - 2}`"
-                                            :title="KETERANGAN_TGH_N2"
-                                            kelas="bg-orange-100 text-orange-800 border-orange-300/80"
-                                            @mulai="mulaiEdit(pegawai, 'tgh_n2')"
-                                            @simpan="simpanSaldo(pegawai)"
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="tgh_n2"
                                         />
+                                        <div
+                                            data-rumus-area
+                                            class="inline-block rounded-md transition"
+                                            :class="
+                                                kelasRedup(pegawai, 'tgh_n2')
+                                            "
+                                        >
+                                            <SelAngka
+                                                field="tgh_n2"
+                                                :model-value="draft.tgh_n2"
+                                                @update:model-value="
+                                                    ubahDraft('tgh_n2', $event)
+                                                "
+                                                :nilai="
+                                                    getSisaDitangguhkanN2(
+                                                        pegawai,
+                                                    )
+                                                "
+                                                :editing="isEditing(pegawai)"
+                                                :label="`Tgh ${tahunAktif - 2}`"
+                                                :title="KETERANGAN_TGH_N2"
+                                                :kelas="
+                                                    kelasSel(
+                                                        pegawai,
+                                                        'tgh_n2',
+                                                        KELAS_INPUT_NETRAL,
+                                                    )
+                                                "
+                                                :sorot="
+                                                    kelasSorot(
+                                                        pegawai,
+                                                        'tgh_n2',
+                                                    )
+                                                "
+                                                @mulai="
+                                                    mulaiEdit(pegawai, 'tgh_n2')
+                                                "
+                                                @simpan="simpanSaldo(pegawai)"
+                                            />
+                                        </div>
                                     </td>
 
-                                    <!-- Sisa N-1 (EDITABLE) -->
-                                    <td class="px-2 py-3 text-center">
-                                        <SelAngka
-                                            field="sisa_n1"
-                                            :model-value="draft.sisa_n1"
-                                            @update:model-value="ubahDraft('sisa_n1', $event)"
-                                            :nilai="getSisaTahunLalu(pegawai)"
-                                            :editing="isEditing(pegawai)"
-                                            :label="`Sisa ${tahunAktif - 1}`"
-                                            :max="12"
-                                            kelas="bg-slate-200 text-slate-700 border-slate-300/80"
-                                            @mulai="mulaiEdit(pegawai, 'sisa_n1')"
-                                            @simpan="simpanSaldo(pegawai)"
+                                    <!-- Sisa N-1 (EDITABLE; putih netral; sumber
+                                         rumus Bawaan) -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="sisa_n1"
                                         />
+                                        <div
+                                            data-rumus-area
+                                            class="inline-block rounded-md transition"
+                                            :class="
+                                                kelasRedup(pegawai, 'sisa_n1')
+                                            "
+                                        >
+                                            <SelAngka
+                                                field="sisa_n1"
+                                                :model-value="draft.sisa_n1"
+                                                @update:model-value="
+                                                    ubahDraft('sisa_n1', $event)
+                                                "
+                                                :nilai="
+                                                    getSisaTahunLalu(pegawai)
+                                                "
+                                                :editing="isEditing(pegawai)"
+                                                :label="`Sisa ${tahunAktif - 1}`"
+                                                :max="12"
+                                                :kelas="
+                                                    kelasSel(
+                                                        pegawai,
+                                                        'sisa_n1',
+                                                        KELAS_INPUT_NETRAL,
+                                                    )
+                                                "
+                                                :sorot="
+                                                    kelasSorot(
+                                                        pegawai,
+                                                        'sisa_n1',
+                                                    )
+                                                "
+                                                @mulai="
+                                                    mulaiEdit(
+                                                        pegawai,
+                                                        'sisa_n1',
+                                                    )
+                                                "
+                                                @simpan="simpanSaldo(pegawai)"
+                                            />
+                                        </div>
                                     </td>
 
-                                    <!-- Ditangguhkan N-1 (Oranye, EDITABLE):
-                                         MENAMBAH Total Tersedia -->
-                                    <td class="px-2 py-3 text-center">
-                                        <SelAngka
-                                            field="tgh_n1"
-                                            :model-value="draft.tgh_n1"
-                                            @update:model-value="ubahDraft('tgh_n1', $event)"
-                                            :nilai="getSisaDitangguhkanN1(pegawai)"
-                                            :editing="isEditing(pegawai)"
-                                            :label="`Tgh ${tahunAktif - 1}`"
-                                            :title="KETERANGAN_TGH_N1"
-                                            kelas="bg-orange-100 text-orange-800 border-orange-300/80"
-                                            @mulai="mulaiEdit(pegawai, 'tgh_n1')"
-                                            @simpan="simpanSaldo(pegawai)"
+                                    <!-- Ditangguhkan N-1 (netral, EDITABLE):
+                                         MENAMBAH Total Tersedia (sumber rumus
+                                         Total) -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="tgh_n1"
                                         />
+                                        <div
+                                            data-rumus-area
+                                            class="inline-block rounded-md transition"
+                                            :class="
+                                                kelasRedup(pegawai, 'tgh_n1')
+                                            "
+                                        >
+                                            <SelAngka
+                                                field="tgh_n1"
+                                                :model-value="draft.tgh_n1"
+                                                @update:model-value="
+                                                    ubahDraft('tgh_n1', $event)
+                                                "
+                                                :nilai="
+                                                    getSisaDitangguhkanN1(
+                                                        pegawai,
+                                                    )
+                                                "
+                                                :editing="isEditing(pegawai)"
+                                                :label="`Tgh ${tahunAktif - 1}`"
+                                                :title="KETERANGAN_TGH_N1"
+                                                :kelas="
+                                                    kelasSel(
+                                                        pegawai,
+                                                        'tgh_n1',
+                                                        KELAS_INPUT_NETRAL,
+                                                    )
+                                                "
+                                                :sorot="
+                                                    kelasSorot(
+                                                        pegawai,
+                                                        'tgh_n1',
+                                                    )
+                                                "
+                                                @mulai="
+                                                    mulaiEdit(pegawai, 'tgh_n1')
+                                                "
+                                                @simpan="simpanSaldo(pegawai)"
+                                            />
+                                        </div>
                                     </td>
 
                                     <!-- Sisa tahun ini = Hak - Terpakai
-                                         (abu-abu, hitungan OTOMATIS, tidak bisa diedit).
+                                         (sky, hitungan OTOMATIS, tidak bisa diedit).
                                          Terpakai sudah termasuk Tgh tahun ini.
-                                         Saat baris diedit menampilkan pratinjau. -->
-                                    <td class="px-2 py-3 text-center">
-                                        <span
-                                            class="inline-block min-w-[40px] px-2 py-1 bg-slate-200 text-slate-700 rounded-md font-semibold text-xs border border-slate-300/80"
-                                            :title="KETERANGAN_SISA_TAHUN_INI"
+                                         Saat baris diedit menampilkan pratinjau.
+                                         Klik angkanya untuk menyorot rumus. -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="sisa_n0"
+                                        />
+                                        <button
+                                            type="button"
+                                            data-rumus-area
+                                            @click="
+                                                toggleRumus(pegawai, 'sisa')
+                                            "
+                                            :aria-pressed="
+                                                rumusDibuka(pegawai, 'sisa')
+                                            "
+                                            :title="`${KETERANGAN_SISA_TAHUN_INI} ${KETERANGAN_KLIK_RUMUS}.`"
+                                            class="inline-block min-w-[40px] px-2 py-1 rounded-md font-semibold text-xs border cursor-pointer transition"
+                                            :class="[
+                                                kelasSel(
+                                                    pegawai,
+                                                    'sisa_n0',
+                                                    WARNA_HASIL.sisa.dasar,
+                                                ),
+                                                kelasRedup(pegawai, 'sisa_n0'),
+                                            ]"
                                         >
                                             {{ nilaiSisaTahunIni(pegawai) }}
-                                        </span>
+                                        </button>
                                     </td>
 
-                                    <!-- Ditangguhkan tahun ini (Oranye, EDITABLE):
+                                    <!-- Ditangguhkan tahun ini (netral, EDITABLE):
                                          tetap tercatat dan sudah termasuk dalam
-                                         Terpakai. Tepat di samping Sisa tahun ini. -->
-                                    <td class="px-2 py-3 text-center">
-                                        <SelAngka
-                                            field="tgh_n0"
-                                            :model-value="draft.tgh_n0"
-                                            @update:model-value="ubahDraft('tgh_n0', $event)"
-                                            :nilai="getSisaDitangguhkanTahunIni(pegawai)"
-                                            :editing="isEditing(pegawai)"
-                                            :label="`Tgh ${tahunAktif}`"
-                                            :title="KETERANGAN_TGH_TAHUN_INI"
-                                            kelas="bg-orange-100 text-orange-800 border-orange-300/80"
-                                            @mulai="mulaiEdit(pegawai, 'tgh_n0')"
-                                            @simpan="simpanSaldo(pegawai)"
+                                         Terpakai (sumber rumus Terpakai). Tepat di
+                                         samping Sisa tahun ini. -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="tgh_n0"
                                         />
+                                        <div
+                                            data-rumus-area
+                                            class="inline-block rounded-md transition"
+                                            :class="
+                                                kelasRedup(pegawai, 'tgh_n0')
+                                            "
+                                        >
+                                            <SelAngka
+                                                field="tgh_n0"
+                                                :model-value="draft.tgh_n0"
+                                                @update:model-value="
+                                                    ubahDraft('tgh_n0', $event)
+                                                "
+                                                :nilai="
+                                                    getSisaDitangguhkanTahunIni(
+                                                        pegawai,
+                                                    )
+                                                "
+                                                :editing="isEditing(pegawai)"
+                                                :label="`Tgh ${tahunAktif}`"
+                                                :title="
+                                                    KETERANGAN_TGH_TAHUN_INI
+                                                "
+                                                :kelas="
+                                                    kelasSel(
+                                                        pegawai,
+                                                        'tgh_n0',
+                                                        KELAS_INPUT_NETRAL,
+                                                    )
+                                                "
+                                                :sorot="
+                                                    kelasSorot(
+                                                        pegawai,
+                                                        'tgh_n0',
+                                                    )
+                                                "
+                                                @mulai="
+                                                    mulaiEdit(pegawai, 'tgh_n0')
+                                                "
+                                                @simpan="simpanSaldo(pegawai)"
+                                            />
+                                        </div>
                                     </td>
 
-                                    <!-- Saldo Bawaan Eligible (Hijau) — otomatis;
-                                         saat edit menampilkan pratinjau -->
-                                    <td class="px-2 py-3 text-center">
-                                        <span class="inline-block min-w-[40px] px-2 py-1 bg-emerald-100 text-emerald-800 rounded-md font-bold text-xs border border-emerald-300/80">
+                                    <!-- Saldo Bawaan Eligible (Emerald) — otomatis;
+                                         saat edit menampilkan pratinjau. Klik
+                                         untuk menyorot sumbernya. Aturannya
+                                         (bukan penjumlahan) ada di tooltip. -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="bawaan"
+                                        />
+                                        <button
+                                            type="button"
+                                            data-rumus-area
+                                            @click="
+                                                toggleRumus(pegawai, 'bawaan')
+                                            "
+                                            :aria-pressed="
+                                                rumusDibuka(pegawai, 'bawaan')
+                                            "
+                                            :title="KETERANGAN_BAWAAN"
+                                            class="inline-block min-w-[40px] px-2 py-1 rounded-md font-bold text-xs border cursor-pointer transition"
+                                            :class="[
+                                                kelasSel(
+                                                    pegawai,
+                                                    'bawaan',
+                                                    WARNA_HASIL.bawaan.dasar,
+                                                ),
+                                                kelasRedup(pegawai, 'bawaan'),
+                                            ]"
+                                        >
                                             {{ nilaiBawaan(pegawai) }}
-                                        </span>
+                                        </button>
                                     </td>
 
-                                    <!-- Hak tahun berjalan (EDITABLE, Biru) -->
-                                    <td class="px-2 py-3 text-center">
-                                        <SelAngka
-                                            field="hak"
-                                            :model-value="draft.hak"
-                                            @update:model-value="ubahDraft('hak', $event)"
-                                            :nilai="getSisaTahunIni(pegawai)"
-                                            :editing="isEditing(pegawai)"
-                                            :label="`Hak ${tahunAktif}`"
-                                            kelas="bg-blue-100 text-blue-800 border-blue-300/80"
-                                            @mulai="mulaiEdit(pegawai, 'hak')"
-                                            @simpan="simpanSaldo(pegawai)"
-                                        />
+                                    <!-- Hak tahun berjalan (EDITABLE, putih netral);
+                                         sumber rumus Total dan Sisa N -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp :p="pegawai" kunci="hak" />
+                                        <div
+                                            data-rumus-area
+                                            class="inline-block rounded-md transition"
+                                            :class="kelasRedup(pegawai, 'hak')"
+                                        >
+                                            <SelAngka
+                                                field="hak"
+                                                :model-value="draft.hak"
+                                                @update:model-value="
+                                                    ubahDraft('hak', $event)
+                                                "
+                                                :nilai="
+                                                    getSisaTahunIni(pegawai)
+                                                "
+                                                :editing="isEditing(pegawai)"
+                                                :label="`Hak ${tahunAktif}`"
+                                                :kelas="
+                                                    kelasSel(
+                                                        pegawai,
+                                                        'hak',
+                                                        KELAS_INPUT_NETRAL,
+                                                    )
+                                                "
+                                                :sorot="
+                                                    kelasSorot(pegawai, 'hak')
+                                                "
+                                                @mulai="
+                                                    mulaiEdit(pegawai, 'hak')
+                                                "
+                                                @simpan="simpanSaldo(pegawai)"
+                                            />
+                                        </div>
                                     </td>
 
                                     <!-- Total Hak Tersedia (Indigo) — otomatis;
-                                         saat edit menampilkan pratinjau -->
-                                    <td class="px-2 py-3 text-center">
-                                        <span class="inline-block min-w-[40px] px-2 py-1 bg-indigo-100 text-indigo-800 rounded-md font-bold text-xs border border-indigo-300/80">
+                                         saat edit menampilkan pratinjau. Klik
+                                         untuk menyorot rumus. -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp :p="pegawai" kunci="total" />
+                                        <button
+                                            type="button"
+                                            data-rumus-area
+                                            @click="
+                                                toggleRumus(pegawai, 'total')
+                                            "
+                                            :aria-pressed="
+                                                rumusDibuka(pegawai, 'total')
+                                            "
+                                            :title="KETERANGAN_KLIK_RUMUS"
+                                            class="inline-block min-w-[40px] px-2 py-1 rounded-md font-bold text-xs border cursor-pointer transition"
+                                            :class="[
+                                                kelasSel(
+                                                    pegawai,
+                                                    'total',
+                                                    WARNA_HASIL.total.dasar,
+                                                ),
+                                                kelasRedup(pegawai, 'total'),
+                                            ]"
+                                        >
                                             {{ nilaiTotal(pegawai) }}
-                                        </span>
+                                        </button>
                                     </td>
 
-                                    <!-- Terpakai (EDITABLE, Merah) — angka TAMPIL:
-                                         cuti terpakai (override Admin bila ada,
-                                         kalau tidak angka sistem) + Tgh tahun ini.
-                                         Tanda * kecil muncul kalau angkanya hasil
-                                         koreksi manual Admin HR (termasuk koreksi
-                                         0). Saat edit: tombol ↺ melayang di
-                                         samping kotak (tidak menambah lebar
-                                         kolom) untuk kembali ke angka sistem. -->
-                                    <td class="px-2 py-3 text-center">
-                                        <div class="relative inline-block">
-                                            <SelAngka
-                                                field="terpakai"
-                                                :model-value="draft.terpakai"
-                                                @update:model-value="ubahDraft('terpakai', $event)"
-                                                :nilai="getTerpakaiTampil(pegawai)"
-                                                :editing="isEditing(pegawai)"
-                                                :bintang="adaKoreksi(pegawai)"
-                                                :label="`Terpakai ${tahunAktif}`"
-                                                :max="365"
-                                                :title="
-                                                    adaKoreksi(pegawai)
-                                                        ? `Dikoreksi Admin HR (sistem mencatat ${getTerpakaiSistemTampil(pegawai)} hari)`
-                                                        : ''
-                                                "
-                                                kelas="bg-rose-100 text-rose-800 border-rose-300/80"
-                                                @mulai="mulaiEdit(pegawai, 'terpakai')"
-                                                @simpan="simpanSaldo(pegawai)"
-                                            />
+                                    <!-- [TERPAKAI DIKUNCI] Terpakai (Rose) — HANYA
+                                         TAMPIL. Angka TAMPIL = cuti terpakai (sudah
+                                         ikut koreksi bulanan Rekap Laporan) + Tgh
+                                         tahun ini. Tanda * kecil muncul kalau
+                                         angkanya hasil koreksi Admin HR. Klik
+                                         angkanya = menyorot sumbernya (Tgh tahun
+                                         ini). Ikon kalender di sampingnya = tautan
+                                         ke Rekap Laporan (sudah terfilter ke
+                                         pegawai ini) untuk mengubah per bulan. -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp
+                                            :p="pegawai"
+                                            kunci="terpakai"
+                                        />
+                                        <div
+                                            data-rumus-area
+                                            class="inline-flex items-center gap-1 rounded-md transition"
+                                            :class="
+                                                kelasRedup(pegawai, 'terpakai')
+                                            "
+                                        >
                                             <button
-                                                v-if="isEditing(pegawai) && !draft.pakai_sistem"
                                                 type="button"
-                                                @click="kembalikanTerpakaiKeSistem"
-                                                :title="`Kembalikan ke angka sistem (${getTerpakaiSistemTampil(pegawai)})`"
-                                                :aria-label="`Kembalikan Terpakai ke angka sistem (${getTerpakaiSistemTampil(pegawai)})`"
-                                                class="absolute -right-5 top-1/2 h-4 w-4 -translate-y-1/2 cursor-pointer rounded-full text-[12px] leading-none text-amber-700 hover:bg-amber-100"
+                                                data-rumus-area
+                                                @click="
+                                                    toggleRumus(
+                                                        pegawai,
+                                                        'terpakai',
+                                                    )
+                                                "
+                                                :aria-pressed="
+                                                    rumusDibuka(
+                                                        pegawai,
+                                                        'terpakai',
+                                                    )
+                                                "
+                                                :title="titleTerpakai(pegawai)"
+                                                class="inline-block min-w-[40px] px-2 py-1 rounded-md font-bold text-xs border cursor-pointer transition"
+                                                :class="
+                                                    kelasSel(
+                                                        pegawai,
+                                                        'terpakai',
+                                                        WARNA_HASIL.terpakai
+                                                            .dasar,
+                                                    )
+                                                "
                                             >
-                                                ↺
+                                                {{ nilaiTerpakai(pegawai)
+                                                }}<sup
+                                                    v-if="
+                                                        !isEditing(pegawai) &&
+                                                        adaKoreksi(pegawai)
+                                                    "
+                                                    class="ml-0.5 font-black text-amber-600"
+                                                    >*</sup
+                                                >
                                             </button>
+                                            <Link
+                                                :href="urlRekapLaporan(pegawai)"
+                                                title="Ubah Terpakai per bulan di Rekap Laporan"
+                                                aria-label="Ubah Terpakai per bulan di Rekap Laporan"
+                                                class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-300"
+                                            >
+                                                <svg
+                                                    class="h-3.5 w-3.5"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    viewBox="0 0 24 24"
+                                                >
+                                                    <path
+                                                        stroke-linecap="round"
+                                                        stroke-linejoin="round"
+                                                        stroke-width="2"
+                                                        d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                                    />
+                                                </svg>
+                                            </Link>
                                         </div>
                                     </td>
 
                                     <!-- Saldo Akhir (gelap agar paling menonjol) —
-                                         saat edit menampilkan pratinjau -->
-                                    <td class="px-2 py-3 text-center">
-                                        <span class="inline-block min-w-[40px] px-2.5 py-1 bg-slate-800 text-white rounded-md font-extrabold text-xs shadow-sm border border-slate-900">
+                                         saat edit menampilkan pratinjau. Klik
+                                         untuk menyorot rumus (Total dan Terpakai
+                                         berwarna amber). 'relative' + LencanaOp
+                                         dipakai untuk lencana Δ dampak edit. -->
+                                    <td class="relative px-2 py-3 text-center">
+                                        <LencanaOp :p="pegawai" kunci="saldo" />
+                                        <button
+                                            type="button"
+                                            data-rumus-area
+                                            @click="
+                                                toggleRumus(pegawai, 'saldo')
+                                            "
+                                            :aria-pressed="
+                                                rumusDibuka(pegawai, 'saldo')
+                                            "
+                                            :title="KETERANGAN_KLIK_RUMUS"
+                                            class="inline-block min-w-[40px] px-2.5 py-1 rounded-md font-extrabold text-xs shadow-sm border cursor-pointer transition"
+                                            :class="[
+                                                kelasSel(
+                                                    pegawai,
+                                                    'saldo',
+                                                    WARNA_HASIL.saldo.dasar,
+                                                ),
+                                                kelasRedup(pegawai, 'saldo'),
+                                            ]"
+                                        >
                                             {{ nilaiSaldoAkhir(pegawai) }}
-                                        </span>
+                                        </button>
                                     </td>
 
                                     <!-- Aksi: mode tampil = Riwayat;
                                          mode edit = Simpan (centang) + Batal (X) -->
                                     <td class="px-2 py-3 text-center">
-                                        <div class="inline-flex items-center gap-1">
-                                            <template v-if="!isEditing(pegawai)">
+                                        <div
+                                            class="inline-flex items-center gap-1"
+                                        >
+                                            <template
+                                                v-if="!isEditing(pegawai)"
+                                            >
                                                 <button
-                                                    @click="openDetailModal(pegawai)"
+                                                    @click="
+                                                        openDetailModal(pegawai)
+                                                    "
                                                     type="button"
                                                     class="inline-flex items-center px-2.5 py-1.5 border border-gray-300 rounded-full text-gray-600 bg-white hover:bg-gray-50 hover:text-gray-900 transition shadow-sm cursor-pointer"
                                                     title="Lihat Rincian & Riwayat"
                                                     aria-label="Lihat Rincian dan Riwayat"
                                                 >
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                    <svg
+                                                        class="w-4 h-4"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        viewBox="0 0 24 24"
+                                                    >
+                                                        <path
+                                                            stroke-linecap="round"
+                                                            stroke-linejoin="round"
+                                                            stroke-width="2"
+                                                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                                                        />
                                                     </svg>
                                                 </button>
                                             </template>
                                             <template v-else>
                                                 <button
                                                     type="button"
-                                                    @click="simpanSaldo(pegawai)"
-                                                    :disabled="isSavingSaldo || !isDirty"
+                                                    @click="
+                                                        simpanSaldo(pegawai)
+                                                    "
+                                                    :disabled="
+                                                        isSavingSaldo ||
+                                                        !isDirty
+                                                    "
                                                     class="inline-flex items-center px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full shadow-sm transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                                     title="Simpan (Enter)"
                                                     aria-label="Simpan"
                                                 >
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                                                    <svg
+                                                        class="w-4 h-4"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        viewBox="0 0 24 24"
+                                                    >
+                                                        <path
+                                                            stroke-linecap="round"
+                                                            stroke-linejoin="round"
+                                                            stroke-width="2"
+                                                            d="M5 13l4 4L19 7"
+                                                        />
                                                     </svg>
                                                 </button>
                                                 <button
@@ -2361,8 +3559,18 @@ watch(adaModalTerbuka, (terbuka) => {
                                                     title="Batal (Esc)"
                                                     aria-label="Batal edit"
                                                 >
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                                    <svg
+                                                        class="w-4 h-4"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        viewBox="0 0 24 24"
+                                                    >
+                                                        <path
+                                                            stroke-linecap="round"
+                                                            stroke-linejoin="round"
+                                                            stroke-width="2"
+                                                            d="M6 18L18 6M6 6l12 12"
+                                                        />
                                                     </svg>
                                                 </button>
                                             </template>
@@ -2374,12 +3582,22 @@ watch(adaModalTerbuka, (terbuka) => {
                                      muncul untuk baris yang sedang diedit).
                                      colspan = jumlah kolom tabel (14). -->
                                 <tr
-                                    v-if="isEditing(pegawai) && daftarErrorEdit.length > 0"
+                                    v-if="
+                                        isEditing(pegawai) &&
+                                        daftarErrorEdit.length > 0
+                                    "
                                     class="border-b border-slate-100 bg-red-50"
                                 >
                                     <td colspan="14" class="px-4 py-2">
-                                        <ul class="space-y-0.5 text-xs text-red-600">
-                                            <li v-for="(pesan, i) in daftarErrorEdit" :key="i">
+                                        <ul
+                                            class="space-y-0.5 text-xs text-red-600"
+                                        >
+                                            <li
+                                                v-for="(
+                                                    pesan, i
+                                                ) in daftarErrorEdit"
+                                                :key="i"
+                                            >
                                                 {{ pesan }}
                                             </li>
                                         </ul>
@@ -2390,19 +3608,78 @@ watch(adaModalTerbuka, (terbuka) => {
                     </table>
                 </div>
 
-                <!-- Legenda ikon pensil (layar lebar): menjelaskan penanda di
-                     header kolom. Selalu tampil selama tabel tampil. -->
+                <!-- Legenda ikon pensil & gembok (layar lebar): menjelaskan
+                     penanda di header kolom. Selalu tampil selama tabel tampil. -->
                 <p
                     v-if="punyaData"
                     class="mt-2 hidden lg:flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500"
                 >
                     <IkonPensil />
                     <span>= kolom bisa diedit, klik angkanya.</span>
+                    <IkonGembok />
+                    <span
+                        >= Terpakai dikunci, ubah per bulan di Rekap
+                        Laporan.</span
+                    >
                     <span class="text-slate-400">
                         Sisa {{ tahunAktif }}, Bawaan, Total, dan Saldo Akhir
                         dihitung otomatis. Tgh {{ tahunAktif }} tetap tercatat
                         dan sudah termasuk dalam Terpakai.
                     </span>
+                </p>
+
+                <!-- Legenda warna hasil hitungan (layar lebar). Klik angka
+                     berwarna untuk menyorot kolom sumbernya, termasuk Terpakai
+                     (menyorot Tgh tahun ini). Esc atau klik di luar untuk
+                     menutup sorotan. -->
+                <p
+                    v-if="punyaData"
+                    class="mt-1 hidden lg:flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500"
+                >
+                    <span
+                        >Klik angka berwarna untuk menyorot sumber
+                        rumusnya:</span
+                    >
+                    <span
+                        class="rounded px-1.5 py-0.5 font-semibold"
+                        :class="WARNA_HASIL.sisa.dasar"
+                        >Sisa {{ tahunAktif }}</span
+                    >
+                    <span
+                        class="rounded px-1.5 py-0.5 font-semibold"
+                        :class="WARNA_HASIL.bawaan.dasar"
+                        >Bawaan</span
+                    >
+                    <span
+                        class="rounded px-1.5 py-0.5 font-semibold"
+                        :class="WARNA_HASIL.total.dasar"
+                        >Total</span
+                    >
+                    <span
+                        class="rounded px-1.5 py-0.5 font-semibold"
+                        :class="WARNA_HASIL.terpakai.dasar"
+                        >Terpakai</span
+                    >
+                    <span
+                        class="rounded px-1.5 py-0.5 font-semibold"
+                        :class="WARNA_HASIL.saldo.dasar"
+                        >Saldo Akhir</span
+                    >
+                </p>
+
+                <!-- Legenda dampak edit (layar lebar): arti lencana Δ oranye. -->
+                <p
+                    v-if="punyaData"
+                    class="mt-1 hidden lg:flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500"
+                >
+                    <span
+                        class="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 text-[11px] font-bold leading-none text-white"
+                        >Δ</span
+                    >
+                    <span
+                        >= kolom yang ikut berubah saat kotak yang sedang diedit
+                        diubah. Header kolomnya juga berwarna oranye.</span
+                    >
                 </p>
 
                 <!-- Petunjuk mode edit inline (layar lebar) -->
@@ -2411,17 +3688,18 @@ watch(adaModalTerbuka, (terbuka) => {
                     class="mt-3 hidden lg:block text-xs text-emerald-700"
                 >
                     Mode edit tahun {{ tahunAktif }}: ubah angka di baris yang
-                    disorot. Sisa {{ tahunAktif }}, Bawaan, Total, dan Saldo
-                    Akhir dihitung otomatis. Tekan Enter untuk menyimpan atau
-                    Esc untuk membatalkan.
+                    disorot. Sisa {{ tahunAktif }}, Bawaan, Total, Terpakai, dan
+                    Saldo Akhir dihitung otomatis. Tekan Enter untuk menyimpan
+                    atau Esc untuk membatalkan.
                 </p>
 
                 <!-- Catatan kaki: hanya tampil kalau ada minimal 1 baris yang
-                     angka Terpakai-nya dikoreksi manual Admin HR. -->
+                     angka Terpakai-nya dikoreksi Admin HR. -->
                 <p v-if="adaItemDikoreksi" class="mt-3 text-xs text-amber-700">
-                    * Angka bertanda bintang disesuaikan manual oleh Admin HR.
-                    Lihat angka sistem lewat Rincian, atau klik angkanya lalu
-                    tekan ↺.
+                    * Angka bertanda bintang dikoreksi Admin HR di Rekap
+                    Laporan. Arahkan kursor ke angkanya untuk melihat bulan yang
+                    dikoreksi, atau klik ikon kalender untuk membuka Rekap
+                    Laporan pegawai itu.
                 </p>
 
                 <!-- Pagination (link dari Laravel paginator, gaya Rekap Laporan).
@@ -2433,16 +3711,24 @@ watch(adaModalTerbuka, (terbuka) => {
                 >
                     <p class="text-xs text-gray-500 text-center sm:text-left">
                         Menampilkan
-                        <span class="font-semibold text-gray-700">{{ dataPegawai.from ?? 0 }}</span>
+                        <span class="font-semibold text-gray-700">{{
+                            dataPegawai.from ?? 0
+                        }}</span>
                         -
-                        <span class="font-semibold text-gray-700">{{ dataPegawai.to ?? 0 }}</span>
+                        <span class="font-semibold text-gray-700">{{
+                            dataPegawai.to ?? 0
+                        }}</span>
                         dari
-                        <span class="font-semibold text-gray-700">{{ dataPegawai.total ?? 0 }}</span>
+                        <span class="font-semibold text-gray-700">{{
+                            dataPegawai.total ?? 0
+                        }}</span>
                         pegawai
                     </p>
 
                     <!-- Paginasi ringkas (HP) -->
-                    <div class="flex w-full items-center justify-between gap-2 sm:hidden">
+                    <div
+                        class="flex w-full items-center justify-between gap-2 sm:hidden"
+                    >
                         <button
                             type="button"
                             :disabled="!linkSebelumnya?.url"
@@ -2456,7 +3742,9 @@ watch(adaModalTerbuka, (terbuka) => {
                         >
                             &laquo; Sebelumnya
                         </button>
-                        <span class="shrink-0 px-1 text-xs font-semibold text-gray-600">
+                        <span
+                            class="shrink-0 px-1 text-xs font-semibold text-gray-600"
+                        >
                             {{ dataPegawai.current_page ?? 1 }} /
                             {{ dataPegawai.last_page ?? 1 }}
                         </span>
@@ -2476,7 +3764,9 @@ watch(adaModalTerbuka, (terbuka) => {
                     </div>
 
                     <!-- Paginasi lengkap (>= sm) -->
-                    <div class="hidden sm:flex flex-wrap items-center justify-center gap-1">
+                    <div
+                        class="hidden sm:flex flex-wrap items-center justify-center gap-1"
+                    >
                         <button
                             v-for="(link, index) in dataPegawai.links"
                             :key="index"
@@ -2536,10 +3826,14 @@ watch(adaModalTerbuka, (terbuka) => {
                         >
                             <!-- Handle bottom sheet (HP) -->
                             <div class="sm:hidden flex justify-center pt-2">
-                                <span class="h-1.5 w-10 rounded-full bg-gray-300"></span>
+                                <span
+                                    class="h-1.5 w-10 rounded-full bg-gray-300"
+                                ></span>
                             </div>
 
-                            <div class="flex items-start justify-between gap-3 px-4 sm:px-6 pt-2 sm:pt-3.5 pb-3">
+                            <div
+                                class="flex items-start justify-between gap-3 px-4 sm:px-6 pt-2 sm:pt-3.5 pb-3"
+                            >
                                 <div class="min-w-0 flex-1">
                                     <h3
                                         id="judul-modal-rincian"
@@ -2547,10 +3841,13 @@ watch(adaModalTerbuka, (terbuka) => {
                                     >
                                         Rincian Kuota & Riwayat Pegawai
                                     </h3>
-                                    <p class="hidden sm:block text-xs text-gray-500 mt-0.5">
+                                    <p
+                                        class="hidden sm:block text-xs text-gray-500 mt-0.5"
+                                    >
                                         Lihat rincian saldo dan riwayat
                                         pengajuan cuti. Untuk mengubah saldo,
-                                        klik angkanya pada baris pegawai.
+                                        klik angkanya pada baris pegawai. Cuti
+                                        Terpakai diubah di Rekap Laporan.
                                     </p>
 
                                     <!-- Profil pegawai ringkas (satu baris) -->
@@ -2558,18 +3855,31 @@ watch(adaModalTerbuka, (terbuka) => {
                                         v-if="selectedPegawai"
                                         class="mt-2 flex items-center gap-2.5 min-w-0"
                                     >
-                                        <div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold text-sm uppercase shadow-sm shrink-0">
-                                            {{ selectedPegawai.nama?.charAt(0) || "?" }}
+                                        <div
+                                            class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold text-sm uppercase shadow-sm shrink-0"
+                                        >
+                                            {{
+                                                selectedPegawai.nama?.charAt(
+                                                    0,
+                                                ) || "?"
+                                            }}
                                         </div>
                                         <div class="min-w-0">
-                                            <p class="font-bold text-gray-900 text-sm leading-tight truncate">
+                                            <p
+                                                class="font-bold text-gray-900 text-sm leading-tight truncate"
+                                            >
                                                 {{ selectedPegawai.nama }}
                                             </p>
-                                            <p class="text-[11px] text-gray-500 leading-tight mt-0.5 truncate">
+                                            <p
+                                                class="text-[11px] text-gray-500 leading-tight mt-0.5 truncate"
+                                            >
                                                 NIP:
                                                 {{ selectedPegawai.nip || "-" }}
                                                 &middot;
-                                                {{ selectedPegawai.jabatan || "Staf / Pegawai" }}
+                                                {{
+                                                    selectedPegawai.jabatan ||
+                                                    "Staf / Pegawai"
+                                                }}
                                             </p>
                                         </div>
                                     </div>
@@ -2582,8 +3892,19 @@ watch(adaModalTerbuka, (terbuka) => {
                                     aria-label="Tutup rincian"
                                     class="shrink-0 h-10 w-10 inline-flex items-center justify-center rounded-full text-gray-500 hover:text-red-500 bg-white border border-gray-200 hover:bg-gray-100 transition cursor-pointer"
                                 >
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                    <svg
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        class="w-5 h-5"
+                                        fill="none"
+                                        viewBox="0 0 24 24"
+                                        stroke="currentColor"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M6 18L18 6M6 6l12 12"
+                                        />
                                     </svg>
                                 </button>
                             </div>
@@ -2597,94 +3918,190 @@ watch(adaModalTerbuka, (terbuka) => {
                             <!-- 4 KPI ringkas (Hak → Terpakai → Sisa → Saldo Akhir).
                              HP: 2x2. >= sm: satu baris. -->
                             <div class="px-3 sm:px-6 pt-3 pb-3 sm:pb-2.5">
-                                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-2.5">
+                                <div
+                                    class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-2.5"
+                                >
                                     <!-- KPI 1: Hak -->
-                                    <div class="bg-white px-2.5 py-2 rounded-xl border border-gray-200 shadow-sm text-center">
-                                        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider leading-tight">
+                                    <div
+                                        class="bg-white px-2.5 py-2 rounded-xl border border-gray-200 shadow-sm text-center"
+                                    >
+                                        <p
+                                            class="text-[10px] font-bold text-gray-400 uppercase tracking-wider leading-tight"
+                                        >
                                             Hak {{ tahunAktif }}
                                         </p>
-                                        <p class="text-lg sm:text-xl font-black text-gray-800 leading-tight mt-0.5">
-                                            {{ getSisaTahunIni(selectedPegawai) }}
-                                            <span class="text-[11px] font-normal">hari</span>
+                                        <p
+                                            class="text-lg sm:text-xl font-black text-gray-800 leading-tight mt-0.5"
+                                        >
+                                            {{
+                                                getSisaTahunIni(selectedPegawai)
+                                            }}
+                                            <span
+                                                class="text-[11px] font-normal"
+                                                >hari</span
+                                            >
                                         </p>
                                     </div>
 
                                     <!-- KPI 2: Terpakai (Rose) — angka tampil,
                                          sudah termasuk Tgh tahun ini -->
-                                    <div class="bg-rose-50 px-2.5 py-2 rounded-xl border border-rose-100 shadow-sm text-center">
-                                        <p class="text-[10px] font-bold text-rose-500 uppercase tracking-wider leading-tight">
+                                    <div
+                                        class="bg-rose-50 px-2.5 py-2 rounded-xl border border-rose-100 shadow-sm text-center"
+                                    >
+                                        <p
+                                            class="text-[10px] font-bold text-rose-500 uppercase tracking-wider leading-tight"
+                                        >
                                             Terpakai {{ tahunAktif }}
                                         </p>
-                                        <p class="text-lg sm:text-xl font-black text-rose-600 leading-tight mt-0.5">
-                                            {{ getTerpakaiTampil(selectedPegawai) }}
-                                            <span class="text-[11px] font-normal">hari</span>
+                                        <p
+                                            class="text-lg sm:text-xl font-black text-rose-600 leading-tight mt-0.5"
+                                        >
+                                            {{
+                                                getTerpakaiTampil(
+                                                    selectedPegawai,
+                                                )
+                                            }}
+                                            <span
+                                                class="text-[11px] font-normal"
+                                                >hari</span
+                                            >
                                         </p>
                                     </div>
 
                                     <!-- KPI 3: Sisa (Biru) -->
-                                    <div class="bg-blue-50 px-2.5 py-2 rounded-xl border border-blue-100 shadow-sm text-center">
-                                        <p class="text-[10px] font-bold text-blue-500 uppercase tracking-wider leading-tight">
+                                    <div
+                                        class="bg-blue-50 px-2.5 py-2 rounded-xl border border-blue-100 shadow-sm text-center"
+                                    >
+                                        <p
+                                            class="text-[10px] font-bold text-blue-500 uppercase tracking-wider leading-tight"
+                                        >
                                             Sisa {{ tahunAktif }}
                                         </p>
-                                        <p class="text-lg sm:text-xl font-black text-blue-600 leading-tight mt-0.5">
-                                            {{ getSisaTahunBerjalan(selectedPegawai) }}
-                                            <span class="text-[11px] font-normal">hari</span>
+                                        <p
+                                            class="text-lg sm:text-xl font-black text-blue-600 leading-tight mt-0.5"
+                                        >
+                                            {{
+                                                getSisaTahunBerjalan(
+                                                    selectedPegawai,
+                                                )
+                                            }}
+                                            <span
+                                                class="text-[11px] font-normal"
+                                                >hari</span
+                                            >
                                         </p>
                                     </div>
 
                                     <!-- KPI 4: Saldo Akhir (Hitam Solid) -->
-                                    <div class="bg-slate-800 border border-slate-900 text-white px-2.5 py-2 rounded-xl shadow-md text-center">
-                                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider leading-tight">
+                                    <div
+                                        class="bg-slate-800 border border-slate-900 text-white px-2.5 py-2 rounded-xl shadow-md text-center"
+                                    >
+                                        <p
+                                            class="text-[10px] font-bold text-slate-400 uppercase tracking-wider leading-tight"
+                                        >
                                             Saldo Akhir {{ tahunAktif }}
                                         </p>
-                                        <p class="text-lg sm:text-xl font-black text-white leading-tight mt-0.5">
+                                        <p
+                                            class="text-lg sm:text-xl font-black text-white leading-tight mt-0.5"
+                                        >
                                             {{ getSaldoAkhir(selectedPegawai) }}
-                                            <span class="text-[11px] font-normal">hari</span>
+                                            <span
+                                                class="text-[11px] font-normal"
+                                                >hari</span
+                                            >
                                         </p>
                                     </div>
                                 </div>
                             </div>
                             <!-- ================= END KPI ================= -->
 
-                            <div class="p-3 sm:px-6 sm:py-4 space-y-3 sm:space-y-4">
+                            <div
+                                class="p-3 sm:px-6 sm:py-4 space-y-3 sm:space-y-4"
+                            >
                                 <!-- Kotak Cara Perhitungan Saldo Akhir:
                                      "Saldo Akhir {tahun}: Hak X + Bawaan Y [+ Tgh
                                      tahun lalu T] − Terpakai Z = N hari".
-                                     'Terpakai' = cuti terpakai final (angka Admin
-                                     bila ada, kalau tidak angka sistem) + Tgh tahun
-                                     ini. Kalau Tgh tahun ini > 0, rinciannya tampil
-                                     di baris kecil di bawah rumus.
-                                     Kalau Admin mengisi koreksi, catatan kecil di
-                                     bawahnya menjelaskan bahwa angka sistem tidak
-                                     dipakai. -->
-                                <div class="bg-gray-50 px-3 sm:px-4 py-2 rounded-lg text-xs text-gray-600 border border-gray-100 leading-relaxed">
+                                     'Terpakai' = cuti terpakai (ikut koreksi bulanan
+                                     Rekap Laporan) + Tgh tahun ini. Kalau Tgh tahun
+                                     ini > 0, rinciannya tampil di baris kecil di
+                                     bawah rumus.
+                                     Kalau ada koreksi, catatan kecil di bawahnya
+                                     menjelaskan bahwa angka sistem tidak dipakai
+                                     dan menunjuk bulan yang dikoreksi. -->
+                                <div
+                                    class="bg-gray-50 px-3 sm:px-4 py-2 rounded-lg text-xs text-gray-600 border border-gray-100 leading-relaxed"
+                                >
                                     Saldo Akhir {{ tahunAktif }}:
-                                    <span class="font-semibold text-gray-800">Hak {{ getSisaTahunIni(selectedPegawai) }}</span>
+                                    <span class="font-semibold text-gray-800"
+                                        >Hak
+                                        {{
+                                            getSisaTahunIni(selectedPegawai)
+                                        }}</span
+                                    >
                                     +
-                                    <span class="font-semibold text-gray-800">Bawaan {{ getSaldoBawaanEligible(selectedPegawai) }}</span>
-                                    <template v-if="getSisaDitangguhkanN1(selectedPegawai) > 0">
+                                    <span class="font-semibold text-gray-800"
+                                        >Bawaan
+                                        {{
+                                            getSaldoBawaanEligible(
+                                                selectedPegawai,
+                                            )
+                                        }}</span
+                                    >
+                                    <template
+                                        v-if="
+                                            getSisaDitangguhkanN1(
+                                                selectedPegawai,
+                                            ) > 0
+                                        "
+                                    >
                                         +
-                                        <span class="font-semibold text-gray-800"
+                                        <span
+                                            class="font-semibold text-gray-800"
                                             >Tgh {{ tahunAktif - 1 }}
-                                            {{ getSisaDitangguhkanN1(selectedPegawai) }}</span
+                                            {{
+                                                getSisaDitangguhkanN1(
+                                                    selectedPegawai,
+                                                )
+                                            }}</span
                                         >
                                     </template>
                                     −
-                                    <span class="font-semibold text-gray-800">Terpakai {{ getTerpakaiTampil(selectedPegawai) }}</span>
+                                    <span class="font-semibold text-gray-800"
+                                        >Terpakai
+                                        {{
+                                            getTerpakaiTampil(selectedPegawai)
+                                        }}</span
+                                    >
                                     =
-                                    <span class="font-bold text-green-700">{{ getSaldoAkhir(selectedPegawai) }} hari</span>
+                                    <span class="font-bold text-green-700"
+                                        >{{
+                                            getSaldoAkhir(selectedPegawai)
+                                        }}
+                                        hari</span
+                                    >
                                     <p
-                                        v-if="getSisaDitangguhkanTahunIni(selectedPegawai) > 0"
+                                        v-if="
+                                            getSisaDitangguhkanTahunIni(
+                                                selectedPegawai,
+                                            ) > 0
+                                        "
                                         class="mt-1 text-[11px] text-gray-500"
                                     >
-                                        (Terpakai {{ getTerpakaiTampil(selectedPegawai) }}
+                                        (Terpakai
+                                        {{ getTerpakaiTampil(selectedPegawai) }}
                                         =
                                         {{
                                             getTerpakaiTampil(selectedPegawai) -
-                                            getSisaDitangguhkanTahunIni(selectedPegawai)
+                                            getSisaDitangguhkanTahunIni(
+                                                selectedPegawai,
+                                            )
                                         }}
                                         hari digunakan +
-                                        {{ getSisaDitangguhkanTahunIni(selectedPegawai) }}
+                                        {{
+                                            getSisaDitangguhkanTahunIni(
+                                                selectedPegawai,
+                                            )
+                                        }}
                                         hari ditangguhkan)
                                     </p>
                                     <p
@@ -2693,12 +4110,37 @@ watch(adaModalTerbuka, (terbuka) => {
                                     >
                                         Terpakai memakai angka koreksi Admin HR
                                         ({{
-                                            getKoreksiSaldo(selectedPegawai) +
-                                            getSisaDitangguhkanTahunIni(selectedPegawai)
+                                            getTerpakaiTampil(selectedPegawai)
                                         }}
-                                        hari). Angka dari sistem:
-                                        {{ getTerpakaiSistemTampil(selectedPegawai) }}
+                                        hari<template
+                                            v-if="
+                                                bulanDikoreksi(selectedPegawai)
+                                                    .length > 0
+                                            "
+                                            >, dikoreksi pada bulan
+                                            {{
+                                                bulanDikoreksi(
+                                                    selectedPegawai,
+                                                ).join(", ")
+                                            }}</template
+                                        >). Angka dari sistem:
+                                        {{
+                                            getTerpakaiSistemTampil(
+                                                selectedPegawai,
+                                            )
+                                        }}
                                         hari.
+                                    </p>
+                                    <p class="mt-1.5 text-[11px] text-gray-500">
+                                        Terpakai dikunci di halaman ini.
+                                        <Link
+                                            :href="
+                                                urlRekapLaporan(selectedPegawai)
+                                            "
+                                            class="font-semibold text-emerald-700 underline"
+                                            >Ubah per bulan di Rekap
+                                            Laporan</Link
+                                        >.
                                     </p>
                                 </div>
                                 <!-- ================= END KOTAK PERHITUNGAN ================= -->
@@ -2716,14 +4158,30 @@ watch(adaModalTerbuka, (terbuka) => {
 
                                 <!-- RIWAYAT: menampilkan SEMUA riwayat (tidak dipotong) -->
                                 <div>
-                                    <h5 class="font-bold text-gray-900 text-base mb-3 flex items-center gap-2">
-                                        <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    <h5
+                                        class="font-bold text-gray-900 text-base mb-3 flex items-center gap-2"
+                                    >
+                                        <svg
+                                            class="w-5 h-5 text-green-600"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 24 24"
+                                        >
+                                            <path
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                stroke-width="2"
+                                                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                                            ></path>
                                         </svg>
                                         Riwayat Pengajuan Cuti
-                                        <span class="inline-block min-w-[20px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 text-[11px] font-bold text-center">{{
-                                            selectedPegawai.pengajuan_cuti?.length || 0
-                                        }}</span>
+                                        <span
+                                            class="inline-block min-w-[20px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 text-[11px] font-bold text-center"
+                                            >{{
+                                                selectedPegawai.pengajuan_cuti
+                                                    ?.length || 0
+                                            }}</span
+                                        >
                                     </h5>
 
                                     <!-- Ringkasan untuk verifikasi Terpakai:
@@ -2733,30 +4191,68 @@ watch(adaModalTerbuka, (terbuka) => {
                                     <div
                                         class="mb-3 rounded-lg border px-3 py-2 text-xs leading-relaxed"
                                         :class="
-                                            ringkasanDisetujui.total === ringkasanDisetujui.sistem
+                                            ringkasanDisetujui.total ===
+                                            ringkasanDisetujui.sistem
                                                 ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
                                                 : 'border-amber-200 bg-amber-50 text-amber-800'
                                         "
                                     >
                                         Cuti Tahunan disetujui {{ tahunAktif }}:
-                                        <span class="font-bold">{{ ringkasanDisetujui.total }} hari</span>
-                                        dari {{ ringkasanDisetujui.jumlahPengajuan }}
+                                        <span class="font-bold"
+                                            >{{
+                                                ringkasanDisetujui.total
+                                            }}
+                                            hari</span
+                                        >
+                                        dari
+                                        {{ ringkasanDisetujui.jumlahPengajuan }}
                                         pengajuan. Sistem mencatat
-                                        <span class="font-bold">{{ ringkasanDisetujui.sistem }} hari</span>.
-                                        <template v-if="ringkasanDisetujui.total !== ringkasanDisetujui.sistem">
-                                            Angkanya berbeda, periksa riwayat di bawah.
+                                        <span class="font-bold"
+                                            >{{
+                                                ringkasanDisetujui.sistem
+                                            }}
+                                            hari</span
+                                        >.
+                                        <template
+                                            v-if="
+                                                ringkasanDisetujui.total !==
+                                                ringkasanDisetujui.sistem
+                                            "
+                                        >
+                                            Angkanya berbeda, periksa riwayat di
+                                            bawah.
                                         </template>
-                                        <template v-if="getSisaDitangguhkanTahunIni(selectedPegawai) > 0">
+                                        <template
+                                            v-if="
+                                                getSisaDitangguhkanTahunIni(
+                                                    selectedPegawai,
+                                                ) > 0
+                                            "
+                                        >
                                             Ditambah Tgh
-                                            {{ getSisaDitangguhkanTahunIni(selectedPegawai) }}
+                                            {{
+                                                getSisaDitangguhkanTahunIni(
+                                                    selectedPegawai,
+                                                )
+                                            }}
                                             hari, Terpakai yang tampil
-                                            {{ getTerpakaiSistemTampil(selectedPegawai) }}
+                                            {{
+                                                getTerpakaiSistemTampil(
+                                                    selectedPegawai,
+                                                )
+                                            }}
                                             hari.
                                         </template>
-                                        <template v-if="adaKoreksi(selectedPegawai)">
+                                        <template
+                                            v-if="adaKoreksi(selectedPegawai)"
+                                        >
                                             Terpakai yang tampil di tabel:
                                             <span class="font-bold"
-                                                >{{ getTerpakaiTampil(selectedPegawai) }}
+                                                >{{
+                                                    getTerpakaiTampil(
+                                                        selectedPegawai,
+                                                    )
+                                                }}
                                                 hari (koreksi Admin HR)</span
                                             >.
                                         </template>
@@ -2774,13 +4270,18 @@ watch(adaModalTerbuka, (terbuka) => {
                                                 :key="opsi.key"
                                                 type="button"
                                                 @click="
-                                                    filterStatusRiwayat = opsi.key;
+                                                    filterStatusRiwayat =
+                                                        opsi.key;
                                                     expandedRiwayatId = null;
                                                 "
-                                                :aria-pressed="filterStatusRiwayat === opsi.key"
+                                                :aria-pressed="
+                                                    filterStatusRiwayat ===
+                                                    opsi.key
+                                                "
                                                 class="inline-flex min-h-[32px] cursor-pointer items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold transition"
                                                 :class="
-                                                    filterStatusRiwayat === opsi.key
+                                                    filterStatusRiwayat ===
+                                                    opsi.key
                                                         ? 'border-emerald-600 bg-emerald-600 text-white'
                                                         : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
                                                 "
@@ -2789,15 +4290,22 @@ watch(adaModalTerbuka, (terbuka) => {
                                                 <span
                                                     class="rounded-full px-1.5 text-[10px] font-bold"
                                                     :class="
-                                                        filterStatusRiwayat === opsi.key
+                                                        filterStatusRiwayat ===
+                                                        opsi.key
                                                             ? 'bg-white/25'
                                                             : 'bg-gray-100 text-gray-500'
                                                     "
-                                                    >{{ jumlahPerStatus[opsi.key] }}</span
+                                                    >{{
+                                                        jumlahPerStatus[
+                                                            opsi.key
+                                                        ]
+                                                    }}</span
                                                 >
                                             </button>
                                         </div>
-                                        <label class="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-600">
+                                        <label
+                                            class="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-600"
+                                        >
                                             <input
                                                 type="checkbox"
                                                 v-model="hanyaCutiTahunan"
@@ -2817,15 +4325,17 @@ watch(adaModalTerbuka, (terbuka) => {
                                         <template
                                             v-if="
                                                 !selectedPegawai.pengajuan_cuti ||
-                                                selectedPegawai.pengajuan_cuti.length === 0
+                                                selectedPegawai.pengajuan_cuti
+                                                    .length === 0
                                             "
                                         >
-                                            Belum ada catatan riwayat pengajuan cuti.
+                                            Belum ada catatan riwayat pengajuan
+                                            cuti.
                                         </template>
                                         <template v-else>
-                                            Tidak ada pengajuan yang cocok dengan
-                                            filter. Pilih status "Semua" atau
-                                            matikan "Hanya Cuti Tahunan".
+                                            Tidak ada pengajuan yang cocok
+                                            dengan filter. Pilih status "Semua"
+                                            atau matikan "Hanya Cuti Tahunan".
                                         </template>
                                     </div>
 
@@ -2837,48 +4347,95 @@ watch(adaModalTerbuka, (terbuka) => {
                                             @click="toggleExpand(riwayat.id)"
                                             class="bg-white p-3 sm:p-4 rounded-xl border border-gray-200/80 text-sm flex flex-col gap-2.5 transition-colors duration-150 hover:shadow-sm cursor-pointer relative overflow-hidden group"
                                             :class="[
-                                                kelasGarisStatus(riwayat.status),
+                                                kelasGarisStatus(
+                                                    riwayat.status,
+                                                ),
                                                 expandedRiwayatId === riwayat.id
                                                     ? 'ring-2 ring-green-500/20'
                                                     : '',
                                             ]"
                                         >
                                             <!-- Baris atas: Jenis Cuti & Badge Status -->
-                                            <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1.5">
-                                                <span class="font-bold text-gray-900 text-base break-words group-hover:text-green-700 transition">{{
-                                                    riwayat.jenis_cuti
-                                                }}</span>
-                                                <div class="flex items-start sm:items-center justify-between sm:justify-start gap-2">
+                                            <div
+                                                class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1.5"
+                                            >
+                                                <span
+                                                    class="font-bold text-gray-900 text-base break-words group-hover:text-green-700 transition"
+                                                    >{{
+                                                        riwayat.jenis_cuti
+                                                    }}</span
+                                                >
+                                                <div
+                                                    class="flex items-start sm:items-center justify-between sm:justify-start gap-2"
+                                                >
                                                     <span
                                                         class="px-2.5 py-1 rounded-md font-bold text-[11px] sm:text-xs tracking-wide uppercase min-w-0 break-words"
-                                                        :class="kelasBadgeStatus(riwayat.status)"
+                                                        :class="
+                                                            kelasBadgeStatus(
+                                                                riwayat.status,
+                                                            )
+                                                        "
                                                     >
-                                                        {{ getStatusLabel(riwayat.status) }}
+                                                        {{
+                                                            getStatusLabel(
+                                                                riwayat.status,
+                                                            )
+                                                        }}
                                                     </span>
                                                     <svg
                                                         class="w-4 h-4 mt-1 sm:mt-0 text-gray-400 transition-transform duration-200 shrink-0"
                                                         :class="{
                                                             'rotate-180 text-green-600':
-                                                                expandedRiwayatId === riwayat.id,
+                                                                expandedRiwayatId ===
+                                                                riwayat.id,
                                                         }"
-                                                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        viewBox="0 0 24 24"
                                                     >
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                                        <path
+                                                            stroke-linecap="round"
+                                                            stroke-linejoin="round"
+                                                            stroke-width="2"
+                                                            d="M19 9l-7 7-7-7"
+                                                        />
                                                     </svg>
                                                 </div>
                                             </div>
 
                                             <!-- Tanggal & Durasi -->
-                                            <div class="text-gray-600 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-medium">
-                                                <span>{{ riwayat.tanggal_mulai }} s/d {{ riwayat.tanggal_selesai }}</span>
-                                                <span>&middot;</span>
-                                                <span class="font-bold text-gray-900">{{ getDurasi(riwayat) }} Hari</span>
+                                            <div
+                                                class="text-gray-600 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-medium"
+                                            >
                                                 <span
-                                                    v-if="hariDihitungBeda(riwayat)"
+                                                    >{{ riwayat.tanggal_mulai }}
+                                                    s/d
+                                                    {{
+                                                        riwayat.tanggal_selesai
+                                                    }}</span
+                                                >
+                                                <span>&middot;</span>
+                                                <span
+                                                    class="font-bold text-gray-900"
+                                                    >{{
+                                                        getDurasi(riwayat)
+                                                    }}
+                                                    Hari</span
+                                                >
+                                                <span
+                                                    v-if="
+                                                        hariDihitungBeda(
+                                                            riwayat,
+                                                        )
+                                                    "
                                                     class="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
                                                     :title="`Cuti lintas tahun: hanya ${riwayat.hari_di_tahun_ini} hari yang jatuh di ${tahunAktif}`"
-                                                    >dihitung di {{ tahunAktif }}:
-                                                    {{ riwayat.hari_di_tahun_ini }} hari</span
+                                                    >dihitung di
+                                                    {{ tahunAktif }}:
+                                                    {{
+                                                        riwayat.hari_di_tahun_ini
+                                                    }}
+                                                    hari</span
                                                 >
                                             </div>
 
@@ -2887,54 +4444,114 @@ watch(adaModalTerbuka, (terbuka) => {
                                                 v-if="riwayat.keterangan"
                                                 class="text-gray-800 bg-gray-50/80 border border-gray-200/60 p-3 rounded-xl italic text-sm font-medium leading-relaxed break-words"
                                             >
-                                                "{{ formatKeteranganRapi(riwayat.keterangan) }}"
+                                                "{{
+                                                    formatKeteranganRapi(
+                                                        riwayat.keterangan,
+                                                    )
+                                                }}"
                                             </div>
 
                                             <!-- ========================================== -->
                                             <!-- AREA RINCIAN YANG MUNCUL SAAT KARTU DIKLIK -->
                                             <!-- ========================================== -->
                                             <div
-                                                v-if="expandedRiwayatId === riwayat.id"
+                                                v-if="
+                                                    expandedRiwayatId ===
+                                                    riwayat.id
+                                                "
                                                 @click.stop
                                                 class="mt-1 pt-3 border-t-2 border-dashed border-green-200 bg-green-50/40 -mx-3 sm:-mx-4 -mb-3 sm:-mb-4 p-3 sm:p-4 rounded-b-xl space-y-3 text-xs cursor-default"
                                             >
-                                                <div class="font-bold text-green-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-                                                    <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                <div
+                                                    class="font-bold text-green-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5"
+                                                >
+                                                    <svg
+                                                        class="w-4 h-4 text-green-600"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        viewBox="0 0 24 24"
+                                                    >
+                                                        <path
+                                                            stroke-linecap="round"
+                                                            stroke-linejoin="round"
+                                                            stroke-width="2"
+                                                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                                        />
                                                     </svg>
                                                     Rincian Lengkap Pengajuan
                                                 </div>
 
                                                 <!-- Alamat & kontak selama cuti (tampil '-'
                                              kalau field belum dikirim controller) -->
-                                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 bg-white p-3 rounded-lg border border-green-100">
+                                                <div
+                                                    class="grid grid-cols-1 md:grid-cols-2 gap-3 bg-white p-3 rounded-lg border border-green-100"
+                                                >
                                                     <div>
-                                                        <span class="block text-gray-400 text-[10px] uppercase font-semibold">Alamat Selama Cuti</span>
-                                                        <p class="font-medium text-gray-800 mt-0.5 break-words">
-                                                            {{ riwayat.alamat_cuti || "-" }}
+                                                        <span
+                                                            class="block text-gray-400 text-[10px] uppercase font-semibold"
+                                                            >Alamat Selama
+                                                            Cuti</span
+                                                        >
+                                                        <p
+                                                            class="font-medium text-gray-800 mt-0.5 break-words"
+                                                        >
+                                                            {{
+                                                                riwayat.alamat_cuti ||
+                                                                "-"
+                                                            }}
                                                         </p>
                                                     </div>
                                                     <div>
-                                                        <span class="block text-gray-400 text-[10px] uppercase font-semibold">Nomor Kontak / Telepon</span>
-                                                        <p class="font-medium text-gray-800 mt-0.5 break-words">
-                                                            {{ riwayat.no_telp || "-" }}
+                                                        <span
+                                                            class="block text-gray-400 text-[10px] uppercase font-semibold"
+                                                            >Nomor Kontak /
+                                                            Telepon</span
+                                                        >
+                                                        <p
+                                                            class="font-medium text-gray-800 mt-0.5 break-words"
+                                                        >
+                                                            {{
+                                                                riwayat.no_telp ||
+                                                                "-"
+                                                            }}
                                                         </p>
                                                     </div>
                                                 </div>
 
                                                 <!-- Lampiran file / surat -->
-                                                <div class="flex flex-wrap items-center justify-between bg-white p-3 rounded-lg border border-green-100 gap-3">
-                                                    <div class="flex items-center gap-2 min-w-0">
-                                                        <svg class="w-5 h-5 text-red-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                                <div
+                                                    class="flex flex-wrap items-center justify-between bg-white p-3 rounded-lg border border-green-100 gap-3"
+                                                >
+                                                    <div
+                                                        class="flex items-center gap-2 min-w-0"
+                                                    >
+                                                        <svg
+                                                            class="w-5 h-5 text-red-500 shrink-0"
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            viewBox="0 0 24 24"
+                                                        >
+                                                            <path
+                                                                stroke-linecap="round"
+                                                                stroke-linejoin="round"
+                                                                stroke-width="2"
+                                                                d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                                                            />
                                                         </svg>
                                                         <div>
-                                                            <span class="block text-gray-800 font-semibold">Lampiran Pendukung</span>
-                                                            <span class="text-gray-400 text-[10px]">{{
-                                                                riwayat.lampiran
-                                                                    ? "File tersedia di sistem"
-                                                                    : "Tidak ada lampiran diunggah"
-                                                            }}</span>
+                                                            <span
+                                                                class="block text-gray-800 font-semibold"
+                                                                >Lampiran
+                                                                Pendukung</span
+                                                            >
+                                                            <span
+                                                                class="text-gray-400 text-[10px]"
+                                                                >{{
+                                                                    riwayat.lampiran
+                                                                        ? "File tersedia di sistem"
+                                                                        : "Tidak ada lampiran diunggah"
+                                                                }}</span
+                                                            >
                                                         </div>
                                                     </div>
                                                     <a
@@ -2945,7 +4562,11 @@ watch(adaModalTerbuka, (terbuka) => {
                                                     >
                                                         Unduh / Lihat
                                                     </a>
-                                                    <span v-else class="text-gray-400 italic text-[11px] shrink-0">Tanpa Lampiran</span>
+                                                    <span
+                                                        v-else
+                                                        class="text-gray-400 italic text-[11px] shrink-0"
+                                                        >Tanpa Lampiran</span
+                                                    >
                                                 </div>
 
                                                 <!-- Jejak Approval LENGKAP: seluruh jenjang
@@ -2953,42 +4574,98 @@ watch(adaModalTerbuka, (terbuka) => {
                                              status masing-masing (Setuju / Tolak /
                                              Menunggu / Belum Giliran / Ditangguhkan). -->
                                                 <div
-                                                    v-if="getVisibleApprovalChain(riwayat.approval_chain, selectedPegawai).length > 0"
+                                                    v-if="
+                                                        getVisibleApprovalChain(
+                                                            riwayat.approval_chain,
+                                                            selectedPegawai,
+                                                        ).length > 0
+                                                    "
                                                     class="bg-white p-3 rounded-lg border border-green-100 space-y-2 sm:space-y-1"
                                                 >
                                                     <div
-                                                        v-for="(step, idx) in getVisibleApprovalChain(riwayat.approval_chain, selectedPegawai)"
-                                                        :key="step.level ?? `tangguh-${idx}`"
+                                                        v-for="(
+                                                            step, idx
+                                                        ) in getVisibleApprovalChain(
+                                                            riwayat.approval_chain,
+                                                            selectedPegawai,
+                                                        )"
+                                                        :key="
+                                                            step.level ??
+                                                            `tangguh-${idx}`
+                                                        "
                                                         class="flex items-start sm:items-center gap-1.5 text-gray-600"
                                                     >
                                                         <svg
-                                                            v-if="step.status === 'tangguh'"
+                                                            v-if="
+                                                                step.status ===
+                                                                'tangguh'
+                                                            "
                                                             class="w-3.5 h-3.5 mt-0.5 sm:mt-0 text-orange-400 shrink-0"
-                                                            fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            viewBox="0 0 24 24"
                                                         >
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                            <path
+                                                                stroke-linecap="round"
+                                                                stroke-linejoin="round"
+                                                                stroke-width="2"
+                                                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                                                            />
                                                         </svg>
                                                         <svg
                                                             v-else
                                                             class="w-3.5 h-3.5 mt-0.5 sm:mt-0 text-gray-400 shrink-0"
-                                                            fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            viewBox="0 0 24 24"
                                                         >
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                                            <path
+                                                                stroke-linecap="round"
+                                                                stroke-linejoin="round"
+                                                                stroke-width="2"
+                                                                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                                                            />
                                                         </svg>
-                                                        <span class="flex-1 min-w-0 break-words">
-                                                            <template v-if="step.level">
-                                                                L{{ step.level }} &middot;
+                                                        <span
+                                                            class="flex-1 min-w-0 break-words"
+                                                        >
+                                                            <template
+                                                                v-if="
+                                                                    step.level
+                                                                "
+                                                            >
+                                                                L{{
+                                                                    step.level
+                                                                }}
+                                                                &middot;
                                                             </template>
-                                                            <strong class="text-gray-800">{{ step.nama }}</strong>
-                                                            <span class="text-gray-400 text-[10px]">
-                                                                ({{ step.label }})
+                                                            <strong
+                                                                class="text-gray-800"
+                                                                >{{
+                                                                    step.nama
+                                                                }}</strong
+                                                            >
+                                                            <span
+                                                                class="text-gray-400 text-[10px]"
+                                                            >
+                                                                ({{
+                                                                    step.label
+                                                                }})
                                                             </span>
                                                         </span>
                                                         <span
                                                             class="font-bold uppercase text-[11px] shrink-0"
-                                                            :class="approvalStepClass(step.status)"
+                                                            :class="
+                                                                approvalStepClass(
+                                                                    step.status,
+                                                                )
+                                                            "
                                                         >
-                                                            {{ approvalStepLabel(step.status) }}
+                                                            {{
+                                                                approvalStepLabel(
+                                                                    step.status,
+                                                                )
+                                                            }}
                                                         </span>
                                                     </div>
                                                 </div>
@@ -3000,7 +4677,9 @@ watch(adaModalTerbuka, (terbuka) => {
                         </div>
 
                         <!-- ============ 3) FOOTER (tetap) ============ -->
-                        <div class="shrink-0 border-t bg-gray-50 px-3 sm:px-6 pt-2.5 sm:pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-3">
+                        <div
+                            class="shrink-0 border-t bg-gray-50 px-3 sm:px-6 pt-2.5 sm:pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-3"
+                        >
                             <div class="flex items-center sm:justify-end">
                                 <button
                                     @click="closeModal"
@@ -3022,13 +4701,20 @@ watch(adaModalTerbuka, (terbuka) => {
                     class="fixed inset-0 z-[9999] flex items-end justify-center bg-black/60 p-0 backdrop-blur-xs overflow-y-auto sm:items-center sm:p-4"
                 >
                     <!-- Background klik-untuk-tutup -->
-                    <div class="absolute inset-0" @click="closeImportModal"></div>
+                    <div
+                        class="absolute inset-0"
+                        @click="closeImportModal"
+                    ></div>
 
                     <div
                         class="relative bg-white p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6 rounded-t-2xl sm:rounded-2xl w-full max-w-md shadow-2xl max-h-[90dvh] overflow-y-auto overscroll-contain sm:my-auto"
                     >
-                        <div class="flex justify-between items-center mb-4 sm:mb-5 border-b pb-3">
-                            <h3 class="text-base sm:text-lg font-bold text-gray-800">
+                        <div
+                            class="flex justify-between items-center mb-4 sm:mb-5 border-b pb-3"
+                        >
+                            <h3
+                                class="text-base sm:text-lg font-bold text-gray-800"
+                            >
                                 Impor Kuota Cuti
                             </h3>
                             <button
@@ -3049,7 +4735,10 @@ watch(adaModalTerbuka, (terbuka) => {
                             </p>
 
                             <div class="mb-2">
-                                <label class="block text-sm font-medium text-gray-700 mb-1">File Excel / CSV</label>
+                                <label
+                                    class="block text-sm font-medium text-gray-700 mb-1"
+                                    >File Excel / CSV</label
+                                >
                                 <input
                                     ref="importFileInput"
                                     type="file"
@@ -3059,7 +4748,10 @@ watch(adaModalTerbuka, (terbuka) => {
                                 />
                             </div>
 
-                            <p v-if="importForm.errors.file" class="text-sm text-red-600 mb-2">
+                            <p
+                                v-if="importForm.errors.file"
+                                class="text-sm text-red-600 mb-2"
+                            >
                                 {{ importForm.errors.file }}
                             </p>
 
@@ -3075,7 +4767,9 @@ watch(adaModalTerbuka, (terbuka) => {
                             </p>
 
                             <!-- TOMBOL AKSI -->
-                            <div class="flex flex-col-reverse gap-2 pt-4 border-t border-gray-100 sm:flex-row sm:justify-end">
+                            <div
+                                class="flex flex-col-reverse gap-2 pt-4 border-t border-gray-100 sm:flex-row sm:justify-end"
+                            >
                                 <button
                                     type="button"
                                     @click="closeImportModal"
@@ -3086,9 +4780,16 @@ watch(adaModalTerbuka, (terbuka) => {
                                 <button
                                     type="submit"
                                     class="min-h-[44px] sm:min-h-0 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                    :disabled="importForm.processing || !importForm.file"
+                                    :disabled="
+                                        importForm.processing ||
+                                        !importForm.file
+                                    "
                                 >
-                                    {{ importForm.processing ? "Mengunggah..." : "Impor Sekarang" }}
+                                    {{
+                                        importForm.processing
+                                            ? "Mengunggah..."
+                                            : "Impor Sekarang"
+                                    }}
                                 </button>
                             </div>
                         </form>
@@ -3110,13 +4811,20 @@ watch(adaModalTerbuka, (terbuka) => {
                     class="fixed inset-0 z-[9999] flex items-end justify-center bg-black/60 p-0 backdrop-blur-xs overflow-y-auto sm:items-center sm:p-4"
                 >
                     <!-- Background klik-untuk-tutup -->
-                    <div class="absolute inset-0" @click="closeGenerateSaldoModal"></div>
+                    <div
+                        class="absolute inset-0"
+                        @click="closeGenerateSaldoModal"
+                    ></div>
 
                     <div
                         class="relative bg-white p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6 rounded-t-2xl sm:rounded-2xl w-full max-w-md shadow-2xl max-h-[90dvh] overflow-y-auto overscroll-contain sm:my-auto"
                     >
-                        <div class="flex justify-between items-center mb-4 border-b pb-3">
-                            <h3 class="text-base sm:text-lg font-bold text-gray-800">
+                        <div
+                            class="flex justify-between items-center mb-4 border-b pb-3"
+                        >
+                            <h3
+                                class="text-base sm:text-lg font-bold text-gray-800"
+                            >
                                 Generate Saldo Tahun Baru
                             </h3>
                             <button
@@ -3140,7 +4848,9 @@ watch(adaModalTerbuka, (terbuka) => {
                             <template v-if="!langkahKonfirmasiGenerate">
                                 <p class="text-sm text-gray-600 mb-4">
                                     Ini akan
-                                    <strong>membuat saldo yang belum ada</strong>
+                                    <strong
+                                        >membuat saldo yang belum ada</strong
+                                    >
                                     untuk pegawai aktif pada tahun di bawah.
                                     Saldo yang sudah ada tidak diubah, karena
                                     bawaannya otomatis diperbarui setiap kali
@@ -3151,7 +4861,9 @@ watch(adaModalTerbuka, (terbuka) => {
                                     untuk pelaporan, bukan carry-over.
                                 </p>
 
-                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                <label
+                                    class="block text-sm font-medium text-gray-700 mb-1"
+                                >
                                     Tahun yang digenerate
                                 </label>
                                 <!-- Opsi dirender dinamis dari 'pilihanTahunGenerate'
@@ -3170,7 +4882,9 @@ watch(adaModalTerbuka, (terbuka) => {
                                     </option>
                                 </select>
                                 <p
-                                    v-if="generateSaldoForm.tahun === currentYear"
+                                    v-if="
+                                        generateSaldoForm.tahun === currentYear
+                                    "
                                     class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-2"
                                 >
                                     Generate tahun berjalan akan menghitung
@@ -3178,11 +4892,16 @@ watch(adaModalTerbuka, (terbuka) => {
                                     diisi manual atau diimpor. Hak yang sudah
                                     diisi tidak berubah.
                                 </p>
-                                <p v-if="generateSaldoForm.errors.tahun" class="text-sm text-red-600 mb-2">
+                                <p
+                                    v-if="generateSaldoForm.errors.tahun"
+                                    class="text-sm text-red-600 mb-2"
+                                >
                                     {{ generateSaldoForm.errors.tahun }}
                                 </p>
 
-                                <div class="flex flex-col-reverse gap-2 pt-4 border-t border-gray-100 mt-3 sm:flex-row sm:justify-end">
+                                <div
+                                    class="flex flex-col-reverse gap-2 pt-4 border-t border-gray-100 mt-3 sm:flex-row sm:justify-end"
+                                >
                                     <button
                                         type="button"
                                         @click="closeGenerateSaldoModal"
@@ -3202,12 +4921,16 @@ watch(adaModalTerbuka, (terbuka) => {
                             <!-- LANGKAH 2: konfirmasi akhir. Request baru dikirim
                              setelah tombol "Ya, Generate Saldo" ditekan. -->
                             <template v-else>
-                                <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:p-4 text-amber-900">
+                                <div
+                                    class="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:p-4 text-amber-900"
+                                >
                                     <p class="text-sm font-bold">
                                         Generate saldo tahun
                                         {{ generateSaldoForm.tahun }}?
                                     </p>
-                                    <ul class="mt-2 list-disc space-y-1 pl-5 text-xs leading-relaxed">
+                                    <ul
+                                        class="mt-2 list-disc space-y-1 pl-5 text-xs leading-relaxed"
+                                    >
                                         <li>
                                             Berlaku untuk
                                             <b>semua pegawai</b>, bukan satu
@@ -3217,14 +4940,20 @@ watch(adaModalTerbuka, (terbuka) => {
                                             Hanya pegawai aktif yang belum punya
                                             saldo yang dibuatkan.
                                         </li>
-                                        <li>Saldo yang sudah ada tidak diubah.</li>
+                                        <li>
+                                            Saldo yang sudah ada tidak diubah.
+                                        </li>
                                     </ul>
                                 </div>
 
-                                <div class="flex flex-col-reverse gap-2 pt-4 border-t border-gray-100 mt-4 sm:flex-row sm:justify-end">
+                                <div
+                                    class="flex flex-col-reverse gap-2 pt-4 border-t border-gray-100 mt-4 sm:flex-row sm:justify-end"
+                                >
                                     <button
                                         type="button"
-                                        @click="langkahKonfirmasiGenerate = false"
+                                        @click="
+                                            langkahKonfirmasiGenerate = false
+                                        "
                                         :disabled="generateSaldoForm.processing"
                                         class="min-h-[44px] sm:min-h-0 px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed"
                                     >

@@ -10,6 +10,7 @@ use App\Models\Notifikasi;
 use App\Models\Pegawai;
 use App\Models\HariLibur;
 use App\Models\ApprovalLog;
+use App\Support\LeaveYearWindow;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -32,6 +33,15 @@ use Carbon\Carbon;
 //     kapan saja. Lihat bisaDibatalkanMandiri().
 //   - Setelah batal/setuju, bawaan tahun-tahun berikutnya disinkronkan lewat
 //     SaldoCuti::sinkronkanBawaanPengajuan().
+//   - Cuti Alasan Penting HANYA untuk PNS (status_kepegawaian = 'PNS').
+//     PPPK & pegawai yang status kepegawaiannya belum diisi ditolak.
+//     Lihat bolehCutiAlasanPenting().
+//   - Cuti Melahirkan HANYA untuk pegawai perempuan. Jenis kelamin dibaca dari
+//     digit ke-15 NIP 18 digit (1 = laki-laki, 2 = perempuan). NIP yang tidak
+//     valid ditolak. Lihat bolehCutiMelahirkan().
+//   - Halaman Riwayat Pengajuan dibatasi JENDELA TAHUN (config/leave.php,
+//     App\Support\LeaveYearWindow): default tahun berjalan, pilihan 2 tahun ke
+//     belakang dan 1 tahun ke depan. Data di luar jendela tetap ada di database.
 //
 // PERBAIKAN (SALDO AJUKAN CUTI = DASHBOARD):
 //   hitungSaldoCuti() sekarang ikut mengurangi cuti ditangguhkan (Tgh) tahun
@@ -47,6 +57,22 @@ class CutiController extends Controller
 
     private const MAKS_RENTANG_HARI = 92;
     private const MAKS_MULAI_TAHUN_KE_DEPAN = 2;
+
+    // Cuti Alasan Penting hanya untuk PNS. PPPK & pegawai yang status
+    // kepegawaiannya belum diisi ditolak (isi lewat Kelola Pegawai / impor).
+    private function bolehCutiAlasanPenting(Pegawai $pegawai): bool
+    {
+        return strtoupper(trim((string) $pegawai->status_kepegawaian)) === 'PNS';
+    }
+
+    // Jenis kelamin dari NIP 18 digit: digit ke-15 (1 = laki-laki, 2 = perempuan).
+    // Cuti Melahirkan hanya untuk perempuan. NIP yang tidak valid ditolak.
+    private function bolehCutiMelahirkan(Pegawai $pegawai): bool
+    {
+        $nip = preg_replace('/\D/', '', (string) $pegawai->nip);
+
+        return strlen($nip) === 18 && $nip[14] === '2';
+    }
 
     // Tolak rentang tidak wajar sebelum hitung hari kerja. Tanggal mundur
     // diperbolehkan (tidak ada batas bawah).
@@ -594,6 +620,10 @@ class CutiController extends Controller
             'hariLiburs' => $hariLiburs,
             'masa_kerja_tahun' => $masaKerjaTahun,
             'boleh_cuti_besar' => $bolehCutiBesar,
+            // Cuti Alasan Penting hanya untuk PNS (status_kepegawaian = 'PNS').
+            'boleh_cuti_alasan_penting' => $this->bolehCutiAlasanPenting($user),
+            // Cuti Melahirkan hanya untuk perempuan (digit ke-15 NIP = 2).
+            'boleh_cuti_melahirkan' => $this->bolehCutiMelahirkan($user),
             'masa_kerja_minimal_cuti_besar' => self::MASA_KERJA_MINIMAL_CUTI_BESAR,
             'tahun_saldo_tersedia' => $this->tahunSaldoTersedia($user->id),
             // Sisa saldo per tahun, mis. {"2026": 8, "2027": 12}.
@@ -649,6 +679,21 @@ class CutiController extends Controller
                         . " tahun. Masa kerja Anda saat ini: {$masaKerja} tahun.",
                 ])->withInput();
             }
+        }
+
+        // Cuti Alasan Penting hanya untuk PNS. PPPK dan pegawai yang status
+        // kepegawaiannya belum diisi ditolak.
+        if ($jenisCuti === 'Cuti Alasan Penting' && !$this->bolehCutiAlasanPenting($user)) {
+            return back()->withErrors([
+                'jenis_cuti' => 'Cuti Alasan Penting hanya dapat diajukan oleh pegawai berstatus PNS.',
+            ])->withInput();
+        }
+
+        // Cuti Melahirkan hanya untuk pegawai perempuan (digit ke-15 NIP = 2).
+        if ($jenisCuti === 'Cuti Melahirkan' && !$this->bolehCutiMelahirkan($user)) {
+            return back()->withErrors([
+                'jenis_cuti' => 'Cuti Melahirkan hanya dapat diajukan oleh pegawai perempuan.',
+            ])->withInput();
         }
 
         // Semua tahun yang disentuh rentang tanggal harus punya saldo (termasuk
@@ -774,10 +819,19 @@ class CutiController extends Controller
     }
 
     // 3. Halaman Riwayat Pengajuan
+    //
+    // JENDELA TAHUN: hanya pengajuan yang rentang tanggalnya BERSINGGUNGAN (overlap)
+    // dengan tahun yang dipilih yang diambil dari database. Cuti lintas tahun
+    // (mis. 31 Des 2026 - 04 Jan 2027) muncul di 2026 maupun 2027. Tahun yang
+    // dipilih divalidasi di server (LeaveYearWindow::resolve), jadi ?tahun=2019
+    // otomatis kembali ke tahun berjalan. Data lama TIDAK dihapus, hanya tidak diambil.
     public function history(Request $request)
     {
         /** @var \App\Models\Pegawai $user */
         $user = Auth::user();
+
+        $tahun = LeaveYearWindow::resolve($request->query('tahun'));
+        [$awalTahun, $akhirTahun] = LeaveYearWindow::range($tahun);
 
         $query = PengajuanCuti::with([
             'pegawai',
@@ -788,7 +842,12 @@ class CutiController extends Controller
             'cutiDitangguhkan',
         ])
             ->where('pegawai_id', $user->id)
-            ->orderBy('created_at', 'desc');
+            // Overlap tanpa DATE(): perbandingan langsung supaya index
+            // (pegawai_id, tanggal_mulai, tanggal_selesai) bisa dipakai.
+            ->where('tanggal_mulai', '<=', $akhirTahun->toDateTimeString())
+            ->where('tanggal_selesai', '>=', $awalTahun->toDateTimeString())
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc');
 
         if ($request->filled('search')) {
             $query->where('keterangan', 'like', '%' . $request->search . '%');
@@ -872,6 +931,10 @@ class CutiController extends Controller
         return Inertia::render('Karyawan/RiwayatPengajuan', [
             'riwayat' => $riwayat,
             'filters' => $request->only(['search', 'status', 'jenis_cuti']),
+            // Filter tahun: tahun yang sedang dipilih (sudah divalidasi) dan
+            // daftar pilihan dropdown (menurun, mis. 2027, 2026, 2025, 2024).
+            'tahun_dipilih' => $tahun,
+            'daftar_tahun' => LeaveYearWindow::years(),
             'sisa_cuti' => (int) $saldoInfo['sisa_cuti'],
             'stats' => $stats,
             'hariLiburs' => HariLibur::orderBy('tanggal')->get(),
@@ -909,12 +972,25 @@ class CutiController extends Controller
 
             $listTimKerja = Pegawai::where('kelompok_substansi', $user->kelompok_substansi)
                 ->whereNotNull('tim_kerja')
-                ->where('tim_kerja', '!=', '-')
+                ->whereRaw("TRIM(tim_kerja) NOT IN ('', '-')")
                 ->distinct()
                 ->orderBy('tim_kerja')
                 ->pluck('tim_kerja')
                 ->values();
-        } elseif (in_array($user->role_id, [4, 6], true)) {
+
+            // Opsi "Tanpa Tim Kerja" (nilai '-') hanya muncul bila di kelompok ini memang
+            // ada pegawai tanpa tim. Data impor bisa tersimpan sebagai NULL, '' atau '-'.
+            $adaTanpaTim = Pegawai::where('kelompok_substansi', $user->kelompok_substansi)
+                ->where(function ($q) {
+                    $q->whereNull('tim_kerja')
+                        ->orWhereRaw("TRIM(tim_kerja) IN ('', '-')");
+                })
+                ->exists();
+
+            if ($adaTanpaTim) {
+                $listTimKerja->push('-'); // paling bawah
+            }
+        } elseif (in_array((int) $user->role_id, [4, 6], true)) {
             $query = PengajuanCuti::with($pegawaiSelect)
                 ->whereHas('pegawai', function ($q) use ($user) {
                     $q->where('id', '!=', $user->id);
