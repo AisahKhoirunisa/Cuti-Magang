@@ -257,7 +257,7 @@ class PembatalanController extends Controller
         $awalTahun      = "{$tahun}-01-01";
         $awalTahunDepan = ($tahun + 1) . '-01-01';
 
-        $daftarCuti = PengajuanCuti::with(['pegawai.saldoCutiTahunIni', 'approvalLogs.approver:id,nama,jabatan'])
+            $halaman = PengajuanCuti::with(['pegawai.saldoCutiTahunIni', 'approvalLogs.approver:id,nama,jabatan'])
             ->bisaDitangguhkan()
             // Semua status ikut filter tahun (rentang cuti beririsan dengan tahun terpilih).
             ->where('tanggal_mulai', '<', $awalTahunDepan)
@@ -275,14 +275,24 @@ class PembatalanController extends Controller
             })
             ->orderBy('tanggal_mulai')
             ->orderBy('id')
-            ->get()
-            ->each(function (PengajuanCuti $pengajuan) {
-                $pengajuan->bisa_ditangguhkan = $pengajuan->bisaDitangguhkan();
-                $pengajuan->alasan_tidak_bisa = $pengajuan->alasanTidakBisaDitangguhkan();
-            });
+            ->paginate(10)
+            ->withQueryString();
 
-        $this->lengkapiDataModal($daftarCuti);
+        // Halaman melebihi batas (mis. baris terakhir di halaman ini baru saja
+        // ditangguhkan dan hilang dari daftar): arahkan ke halaman terakhir.
+        if ($halaman->isEmpty() && $halaman->currentPage() > 1) {
+            return redirect()->route('atasan.penangguhan', array_merge(
+                $request->query(),
+                ['page' => $halaman->lastPage()]
+            ));
+        }
 
+        $halaman->getCollection()->each(function (PengajuanCuti $pengajuan) {
+            $pengajuan->bisa_ditangguhkan = $pengajuan->bisaDitangguhkan();
+            $pengajuan->alasan_tidak_bisa = $pengajuan->alasanTidakBisaDitangguhkan();
+        });
+
+        $this->lengkapiDataModal($halaman->getCollection());
         $daftarKelompokSubstansi = Pegawai::query()
             ->whereNotNull('kelompok_substansi')
             ->where('kelompok_substansi', '!=', '')
@@ -292,7 +302,7 @@ class PembatalanController extends Controller
             ->pluck('kelompok_substansi');
 
         return Inertia::render('Atasan/PembatalanCuti', [
-            'daftarCuti' => $daftarCuti,
+            'daftarCuti' => $halaman,
             'daftarKelompokSubstansi' => $daftarKelompokSubstansi,
             'daftarTahun' => $daftarTahun,
             'filters' => array_merge(

@@ -13,9 +13,17 @@ function debounce(fn, delay) {
 }
 
 const props = defineProps({
+    // Paginator dari server: { data, total, current_page, last_page, from, to, ... }
     daftarCuti: {
-        type: Array,
-        default: () => [],
+        type: Object,
+        default: () => ({
+            data: [],
+            total: 0,
+            current_page: 1,
+            last_page: 1,
+            from: null,
+            to: null,
+        }),
     },
     // Daftar nama kelompok substansi dari controller (sama seperti Monitoring Cuti).
     daftarKelompokSubstansi: {
@@ -273,32 +281,26 @@ const getApprovalRoute = (pegawai) => {
 // ================= END HELPER MODAL DETAIL =================
 
 // ===================== PAGINATION =====================
-const currentPage = ref(1);
-const itemsPerPage = 10;
-const totalData = computed(() => props.daftarCuti.length);
-const totalPages = computed(
-    () => Math.ceil(totalData.value / itemsPerPage) || 1,
-);
-const paginatedData = computed(() => {
-    const start = (currentPage.value - 1) * itemsPerPage;
-    const end = start + itemsPerPage;
-    return props.daftarCuti.slice(start, end);
-});
-const displayedFrom = computed(() =>
-    totalData.value === 0 ? 0 : (currentPage.value - 1) * itemsPerPage + 1,
-);
-const displayedTo = computed(() =>
-    Math.min(currentPage.value * itemsPerPage, totalData.value),
-);
-const prevPage = () => {
-    if (currentPage.value > 1) currentPage.value--;
+const paginatedData = computed(() => props.daftarCuti?.data ?? []);
+const totalData = computed(() => props.daftarCuti?.total ?? 0);
+const currentPage = computed(() => props.daftarCuti?.current_page ?? 1);
+const totalPages = computed(() => props.daftarCuti?.last_page ?? 1);
+const displayedFrom = computed(() => props.daftarCuti?.from ?? 0);
+const displayedTo = computed(() => props.daftarCuti?.to ?? 0);
+
+// Pindah halaman = minta halaman itu ke server, filter tetap terbawa.
+const bukaHalaman = (page) => {
+    if (page === "..." || page === currentPage.value) return;
+    if (page < 1 || page > totalPages.value) return;
+    router.get(
+        route("atasan.penangguhan"),
+        { ...buildParams(), page },
+        { preserveState: true, preserveScroll: true, replace: true },
+    );
 };
-const nextPage = () => {
-    if (currentPage.value < totalPages.value) currentPage.value++;
-};
-const setPage = (page) => {
-    currentPage.value = page;
-};
+const prevPage = () => bukaHalaman(currentPage.value - 1);
+const nextPage = () => bukaHalaman(currentPage.value + 1);
+const setPage = (page) => bukaHalaman(page);
 const pageNumbers = computed(() => {
     const total = totalPages.value;
     const current = currentPage.value;
@@ -334,10 +336,7 @@ const pageNumbers = computed(() => {
     return pages;
 });
 
-// Jepit nomor halaman bila jumlah data berkurang (setelah penangguhan / filter).
-watch(totalPages, (jumlah) => {
-    if (currentPage.value > jumlah) currentPage.value = jumlah;
-});
+
 // ===================== END PAGINATION =====================
 
 // ===================== SEARCH & FILTER =====================
@@ -355,7 +354,6 @@ const buildParams = () => {
 watch(
     [search, kelompok, tahun],
     debounce(() => {
-        currentPage.value = 1;
         router.get(route("atasan.penangguhan"), buildParams(), {
             preserveState: true,
             preserveScroll: true,
@@ -867,7 +865,7 @@ onBeforeUnmount(() => {
                     Hapus semua
                 </button>
                 <span class="text-gray-500"
-                    >{{ daftarCuti.length }} pengajuan</span
+                    >{{ totalData }} pengajuan</span
                 >
             </div>
 
