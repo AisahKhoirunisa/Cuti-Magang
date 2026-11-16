@@ -248,48 +248,7 @@ class DashboardController extends Controller
      */
     private function attachSaldoInfoKePegawai(iterable $collection, int $tahun): void
     {
-        static $cache = [];
-
-
-        foreach ($collection as $item) {
-            $pegawai = $item->pegawai ?? null;
-            if (!$pegawai) {
-                continue;
-            }
-
-
-            if (!isset($cache[$pegawai->id])) {
-                $s = $this->hitungSaldoPegawai((int) $pegawai->id, $tahun);
-
-
-                $cache[$pegawai->id] = [
-                    'kuota_tahunan'           => $s['kuota_tahunan'],
-                    'sisa_tahun_lalu'         => $s['carry_forward_normal'],
-                    'sisa_dua_tahun_lalu'     => $s['sisa_cuti_dua_tahun_lalu'],
-                    'sisa_hak_tahun_berjalan' => $s['sisa_kuota_tahun_ini'],
-                    'saldo_bawaan_eligible'   => $s['saldo_bawaan_eligible'],
-                    'cuti_dikembalikan'       => $s['cuti_dikembalikan'],
-                    'cuti_terpakai'           => $s['cuti_terpakai'],
-                    'cuti_terpakai_total'     => $s['cuti_terpakai_total'],
-                    'cuti_ditangguhkan'       => $s['cuti_ditangguhkan'],
-                    'total_cuti_tersedia'     => $s['total_cuti_tersedia'],
-                ];
-            }
-
-
-            $info = $cache[$pegawai->id];
-            $pegawai->kuota_tahunan           = $info['kuota_tahunan'];
-            $pegawai->sisa_tahun_lalu         = $info['sisa_tahun_lalu'];
-            $pegawai->cuti_terpakai           = $info['cuti_terpakai'];
-            $pegawai->cuti_terpakai_total     = $info['cuti_terpakai_total'];
-            $pegawai->cuti_ditangguhkan       = $info['cuti_ditangguhkan'];
-            $pegawai->sisa_dua_tahun_lalu     = $info['sisa_dua_tahun_lalu'];
-            $pegawai->sisa_hak_tahun_berjalan = $info['sisa_hak_tahun_berjalan'];
-            $pegawai->saldo_bawaan_eligible   = $info['saldo_bawaan_eligible'];
-            $pegawai->cuti_dikembalikan       = $info['cuti_dikembalikan'];
-            $pegawai->total_cuti_tersedia     = $info['total_cuti_tersedia'];
-            $pegawai->sisa_cuti_tersedia      = $info['total_cuti_tersedia'];
-        }
+        \App\Support\RincianSaldo::lengkapi($collection, $tahun);
     }
 
 

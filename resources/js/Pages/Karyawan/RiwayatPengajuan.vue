@@ -25,6 +25,7 @@ const props = defineProps({
     // kalau jenis_cuti pengajuan yang dibuka adalah "Cuti Tahunan". Optional:
     // kalau controller belum mengirim prop ini, kartu tetap tampil dengan
     // angka 0 (tidak error), sampai backend menambahkan datanya.
+    // Dipakai sebagai CADANGAN bila angka per pengajuan (item.pegawai) belum ada.
     stats: {
         type: Object,
         default: () => ({}),
@@ -136,14 +137,28 @@ const sisaCutiTahunanInfo = computed(() => {
     return { total: tahunIni + tahunLalu, tahunIni, tahunLalu };
 });
 
-// Rincian di Modal Detail: prioritaskan data per-pegawai, lalu stats backend
-const rincianSisaCuti = () => {
+// Rincian di Modal Detail.
+// Prioritas: angka per pengajuan dari backend (RincianSaldo, sesuai tahun
+// cutinya). Cadangan: stats tahun berjalan.
+const rincianSisaCuti = (item = null) => {
+    const p = item?.pegawai;
+    if (p && p.total_cuti_tersedia != null) {
+        return {
+            total: Number(p.total_cuti_tersedia),
+            tahunIni: Number(p.sisa_hak_tahun_berjalan ?? 0),
+            saldoBawaan: Number(p.saldo_bawaan_eligible ?? 0),
+            dikembalikan: Number(p.cuti_dikembalikan ?? 0),
+            tahun: p.tahun_saldo ?? null,
+        };
+    }
+
     const s = props.stats || {};
     return {
         total: Number(s.total_cuti_tersedia ?? 0),
         tahunIni: Number(s.sisa_kuota_tahun_ini ?? 0),
         saldoBawaan: Number(s.saldo_bawaan_eligible ?? 0),
         dikembalikan: Number(s.cuti_dikembalikan ?? 0),
+        tahun: null,
     };
 };
 
@@ -152,7 +167,7 @@ const isMenungguTahunan = (item) =>
     isJenisCutiTahunan(item?.jenis_cuti);
 
 const sisaSetelahDisetujui = (item) =>
-    rincianSisaCuti().total - Number(item?.jumlah_hari ?? 0);
+    rincianSisaCuti(item).total - Number(item?.jumlah_hari ?? 0);
 // ================= END SISA CUTI TAHUNAN =================
 
 // ================= FILTER =================
@@ -346,15 +361,16 @@ const eksekusiBatalCuti = () => {
 };
 
 // ==========================================================
-// PEMBATALAN MANDIRI — CUTI SUDAH "DISETUJUI" DAN BELUM DIMULAI
+// PEMBATALAN MANDIRI — CUTI SUDAH "DISETUJUI"
 // Wajib isi alasan pembatalan. Saldo cuti otomatis dikembalikan
 // tanpa perlu approval ulang dari atasan.
 //
-// Tombol Batalkan untuk cuti disetujui TIDAK lagi memeriksa status
-// saja, tetapi memakai flag `item.bisa_batal_mandiri` yang dikirim
-// CutiController@history (aturan tunggal: disetujui DAN tanggal mulai
-// masih sesudah hari ini, dihitung dengan jam SERVER). Tanggal sengaja
-// tidak dihitung di sini, supaya jam perangkat pengguna tidak bisa
+// Tombol Batalkan untuk cuti disetujui TIDAK memeriksa status saja,
+// tetapi memakai flag `item.bisa_batal_mandiri` yang dikirim
+// CutiController@history. Aturan tunggalnya ada di
+// bisaDibatalkanMandiri() di backend: cuti boleh dibatalkan KAPAN SAJA
+// selama status masih "disetujui" (sebelum maupun sesudah cuti dimulai).
+// Aturan tidak dihitung di sini, supaya jam perangkat pengguna tidak bisa
 // dimanipulasi. Server (CutiController@batalkanMandiri) tetap menolak
 // permintaan yang melanggar aturan yang sama.
 //
@@ -1512,10 +1528,11 @@ const sortedRiwayatData = computed(() => {
                                 Batalkan
                             </button>
 
-                            <!-- Sudah disetujui DAN belum dimulai -> Batalkan mandiri (wajib alasan).
-                                 Kondisi memakai flag dari server (bisa_batal_mandiri), bukan lagi
-                                 item.status === 'disetujui'. Setelah cuti dimulai, tombol ini
-                                 hilang di tampilan HP. -->
+                            <!-- Sudah disetujui -> Batalkan mandiri (wajib alasan).
+                                 Kondisi memakai flag dari server (bisa_batal_mandiri), bukan
+                                 item.status === 'disetujui'. Aturannya ada di
+                                 bisaDibatalkanMandiri() backend: boleh kapan saja selama
+                                 status masih disetujui. -->
                             <button
                                 v-else-if="item.bisa_batal_mandiri"
                                 type="button"
@@ -1762,11 +1779,13 @@ const sortedRiwayatData = computed(() => {
                                             Batalkan
                                         </button>
 
-                                        <!-- Status SUDAH DISETUJUI DAN BELUM DIMULAI.
+                                        <!-- Status SUDAH DISETUJUI.
                                              Kondisi memakai flag dari server
-                                             (bisa_batal_mandiri), bukan lagi
-                                             item.status === 'disetujui'. Setelah cuti dimulai,
-                                             baris ini jatuh ke tombol abu-abu (v-else) di bawah. -->
+                                             (bisa_batal_mandiri), bukan item.status === 'disetujui'.
+                                             Aturannya ada di bisaDibatalkanMandiri() backend:
+                                             boleh kapan saja selama status masih disetujui.
+                                             Bila flag false, baris ini jatuh ke tombol abu-abu
+                                             (v-else) di bawah. -->
                                         <button
                                             v-else-if="item.bisa_batal_mandiri"
                                             type="button"
@@ -1791,7 +1810,7 @@ const sortedRiwayatData = computed(() => {
                                         </button>
 
                                         <!-- Status lain (ditangguhkan, ditolak, dibatalkan_reguler, dll.)
-                                             dan cuti disetujui yang sudah dimulai/lewat -->
+                                             atau cuti disetujui yang tidak lagi boleh dibatalkan -->
                                         <span
                                             v-else
                                             class="inline-flex h-9 w-[96px] shrink-0 items-center justify-center gap-1 px-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-xl text-xs font-semibold cursor-not-allowed select-none"
@@ -2010,25 +2029,38 @@ const sortedRiwayatData = computed(() => {
                         </div>
                     </div>
 
-                    <!-- RINCIAN SISA CUTI TAHUNAN (AMBER BOX, sama seperti Dashboard) -->
+                    <!-- RINCIAN SISA CUTI TAHUNAN (AMBER BOX, sama seperti Dashboard).
+                         Angka diambil per pengajuan (sesuai tahun cutinya) dari
+                         selectedDetail.pegawai; bila belum ada, memakai stats. -->
                     <div
                         v-if="isJenisCutiTahunan(selectedDetail.jenis_cuti)"
                         class="grid grid-cols-12 gap-2 items-start bg-amber-50 border border-amber-200 border-l-4 border-l-amber-400 rounded-lg px-3 py-2.5 text-sm"
                     >
                         <div class="col-span-4 text-amber-700 font-semibold">
                             Rincian Sisa Cuti
+                            <span
+                                v-if="rincianSisaCuti(selectedDetail).tahun"
+                                class="block text-[10px] font-medium text-amber-600/80"
+                            >
+                                Tahun {{ rincianSisaCuti(selectedDetail).tahun }}
+                            </span>
                         </div>
                         <div class="col-span-8">
                             <span class="font-extrabold text-amber-800 block">
-                                {{ rincianSisaCuti().total }} Hari Total
+                                {{ rincianSisaCuti(selectedDetail).total }} Hari
+                                Total
                             </span>
                             <span
                                 class="font-normal text-amber-600/80 text-xs block mt-0.5"
                             >
-                                {{ rincianSisaCuti().tahunIni }} sisa tahun ini
-                                + {{ rincianSisaCuti().saldoBawaan }} bawaan +
+                                {{ rincianSisaCuti(selectedDetail).tahunIni }}
+                                sisa tahun ini +
                                 {{
-                                    rincianSisaCuti().dikembalikan
+                                    rincianSisaCuti(selectedDetail).saldoBawaan
+                                }}
+                                bawaan +
+                                {{
+                                    rincianSisaCuti(selectedDetail).dikembalikan
                                 }}
                                 dikembalikan
                             </span>
@@ -2041,6 +2073,8 @@ const sortedRiwayatData = computed(() => {
                                         : 'text-amber-700'
                                 "
                             >
+                                Sisa jika disetujui:
+                                {{ sisaSetelahDisetujui(selectedDetail) }} hari
                             </span>
                         </div>
                     </div>
@@ -2328,7 +2362,7 @@ const sortedRiwayatData = computed(() => {
         </div>
     </Teleport>
 
-    <!-- MODAL PEMBATALAN MANDIRI (khusus status "Disetujui" yang belum dimulai) -->
+    <!-- MODAL PEMBATALAN MANDIRI (khusus status "Disetujui") -->
     <Teleport to="body">
         <div v-if="batalModal.show" class="relative z-[9999]">
             <div

@@ -11,6 +11,7 @@ use App\Models\Pegawai;
 use App\Models\HariLibur;
 use App\Models\ApprovalLog;
 use App\Support\LeaveYearWindow;
+use App\Support\RincianSaldo;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -56,7 +57,6 @@ class CutiController extends Controller
     private const STATUS_AKTIF = ['menunggu_l1', 'menunggu_l2', 'menunggu_l3', 'menunggu_l4', 'disetujui'];
 
     private const MAKS_RENTANG_HARI = 92;
-    private const MAKS_MULAI_TAHUN_KE_DEPAN = 2;
 
     // Cuti Alasan Penting hanya untuk PNS. PPPK & pegawai yang status
     // kepegawaiannya belum diisi ditolak (isi lewat Kelola Pegawai / impor).
@@ -75,7 +75,7 @@ class CutiController extends Controller
     }
 
     // Tolak rentang tidak wajar sebelum hitung hari kerja. Tanggal mundur
-    // diperbolehkan (tidak ada batas bawah).
+    // diperbolehkan dalam jendela tahun (LeaveYearWindow).
     private function pastikanRentangWajar(
         string $mulai,
         string $selesai,
@@ -96,11 +96,18 @@ class CutiController extends Controller
             ]);
         }
 
-        $batasMulai = Carbon::today()->addYears(self::MAKS_MULAI_TAHUN_KE_DEPAN);
-        if ($tMulai->gt($batasMulai)) {
+        $tahunTertua  = min(LeaveYearWindow::years());
+        $tahunTerjauh = max(LeaveYearWindow::years());
+
+        if ($tMulai->year < $tahunTertua) {
             throw ValidationException::withMessages([
-                'tanggal_mulai' => 'Tanggal mulai terlalu jauh ke depan. Maksimal '
-                    . self::MAKS_MULAI_TAHUN_KE_DEPAN . ' tahun dari hari ini.',
+                'tanggal_mulai' => "Tanggal mulai terlalu lama ke belakang. Paling awal 1 Januari {$tahunTertua}.",
+            ]);
+        }
+
+        if ($tMulai->year > $tahunTerjauh) {
+            throw ValidationException::withMessages([
+                'tanggal_mulai' => "Tanggal mulai terlalu jauh ke depan. Maksimal 31 Desember {$tahunTerjauh}.",
             ]);
         }
 
@@ -629,6 +636,10 @@ class CutiController extends Controller
             // Sisa saldo per tahun, mis. {"2026": 8, "2027": 12}.
             'saldo_per_tahun' => $this->saldoPerTahun($user),
             'pengajuan_aktif' => $rentangAktif,
+            'batas_tahun_pengajuan' => [
+                'min' => min(LeaveYearWindow::years()),
+                'max' => max(LeaveYearWindow::years()),
+            ],
         ]);
     }
 
@@ -895,6 +906,10 @@ class CutiController extends Controller
             ->where(fn($q) => $q->where('status_aktif', 'Aktif')->orWhereNull('status_aktif'))
             ->orderBy('id')
             ->value('nama') ?? 'Kepala Biro Perencanaan';
+
+        // Lengkapi info saldo (kuota, terpakai, Tgh, dikembalikan, total tersedia, dll.)
+        // lewat RincianSaldo sebelum menempelkan nama atasan & flag aksi.
+        RincianSaldo::lengkapi($riwayat->getCollection(), $tahun);
 
         foreach ($riwayat->getCollection() as $item) {
             if ($item->pegawai) {

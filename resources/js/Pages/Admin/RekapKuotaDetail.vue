@@ -1644,7 +1644,7 @@ const tahunTujuanDiizinkan = computed(
 // hanya boleh pada Desember). Batas yang sama HARUS ada juga di backend
 // (AdminController::generateSaldoManual), karena jam browser bisa diubah
 // pengguna; pengecekan di sini hanya pengaman tampilan.
-const BULAN_BUKA_GENERATE = 11;
+const BULAN_BUKA_GENERATE = 12;
 const NAMA_BULAN_PANJANG = [
     "Januari",
     "Februari",

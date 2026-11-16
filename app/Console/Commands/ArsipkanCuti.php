@@ -25,10 +25,16 @@ class ArsipkanCuti extends Command
 {
     protected $signature = 'cuti:arsipkan
                             {--jalankan : Pindahkan data sungguhan (tanpa ini hanya dry-run)}
-                            {--tahun= : Batas umur data dalam tahun (bawaan: config leave.arsip_tahun, atau 5)}
+                            {--tahun= : Batas umur data dalam tahun (bawaan: config leave.arsip_tahun, atau 5; minimal 5)}
+                            {--sampai= : [UJI COBA, hanya APP_ENV=local] Batas tanggal manual YYYY-MM-DD, mengabaikan --tahun}
+                            {--tanpa-konfirmasi : Lewati pertanyaan yes/no (untuk jadwal otomatis, hanya bersama --jalankan)}
                             {--batch=100 : Jumlah pengajuan per transaksi}';
 
     protected $description = 'Arsipkan pengajuan cuti final yang selesai lebih dari N tahun lalu';
+
+    // GEMBOK: umur minimum data yang boleh diarsip (tahun). Opsi --tahun hanya
+    // boleh MEMPERBESAR batas ini, tidak boleh menurunkannya.
+    private const MIN_TAHUN_ARSIP = 5;
 
     private const STATUS_FINAL = [
         'disetujui',
@@ -51,8 +57,8 @@ class ArsipkanCuti extends Command
         $batch = max(1, (int) $this->option('batch'));
         $jalankan = (bool) $this->option('jalankan');
 
-        if ($tahun < 1) {
-            $this->error('Batas tahun minimal 1.');
+        if ($tahun < self::MIN_TAHUN_ARSIP) {
+            $this->error('Ditolak: data baru boleh diarsip jika umurnya minimal ' . self::MIN_TAHUN_ARSIP . ' tahun.');
             return self::FAILURE;
         }
 
@@ -63,8 +69,26 @@ class ArsipkanCuti extends Command
             }
         }
 
-        $batas = now()->subYears($tahun)->toDateString();
-        $this->info("Batas: tanggal_selesai sebelum {$batas} ({$tahun} tahun lalu).");
+        $sampai = $this->option('sampai');
+        if ($sampai && $this->option('tanpa-konfirmasi')) {
+            $this->error('Ditolak: --tanpa-konfirmasi tidak boleh digabung dengan --sampai.');
+            return self::FAILURE;
+        }
+        if ($sampai) {
+            if (! app()->environment('local')) {
+                $this->error('Ditolak: --sampai hanya boleh dipakai untuk uji coba di lingkungan local (APP_ENV=local).');
+                return self::FAILURE;
+            }
+            if (! \Carbon\Carbon::hasFormat($sampai, 'Y-m-d')) {
+                $this->error('Format --sampai harus YYYY-MM-DD, contoh 2027-01-01.');
+                return self::FAILURE;
+            }
+            $batas = $sampai;
+            $this->warn("UJI COBA: batas manual, tanggal_selesai sebelum {$batas}.");
+        } else {
+            $batas = now()->subYears($tahun)->toDateString();
+            $this->info("Batas: tanggal_selesai sebelum {$batas} ({$tahun} tahun lalu).");
+        }
 
         $total = $this->kandidat($batas)->count();
 
@@ -78,7 +102,8 @@ class ArsipkanCuti extends Command
             return self::SUCCESS;
         }
 
-        if (! $this->confirm("Pindahkan {$total} pengajuan ke arsip? Pastikan database sudah di-backup.")) {
+        if (! $this->option('tanpa-konfirmasi')
+            && ! $this->confirm("Pindahkan {$total} pengajuan ke arsip? Pastikan database sudah di-backup.")) {
             $this->warn('Dibatalkan.');
             return self::SUCCESS;
         }
@@ -132,12 +157,12 @@ class ArsipkanCuti extends Command
         $perStatus = $this->kandidat($batas)
             ->select('p.status', DB::raw('COUNT(*) as jumlah'))
             ->groupBy('p.status')->get();
-        $this->table(['Status', 'Jumlah'], $perStatus->map(fn ($r) => [$r->status, $r->jumlah])->all());
+        $this->table(['Status', 'Jumlah'], $perStatus->map(fn($r) => [$r->status, $r->jumlah])->all());
 
         $perTahun = $this->kandidat($batas)
             ->select(DB::raw('YEAR(p.tanggal_selesai) as tahun'), DB::raw('COUNT(*) as jumlah'))
             ->groupBy(DB::raw('YEAR(p.tanggal_selesai)'))->orderBy('tahun')->get();
-        $this->table(['Tahun selesai', 'Jumlah'], $perTahun->map(fn ($r) => [$r->tahun, $r->jumlah])->all());
+        $this->table(['Tahun selesai', 'Jumlah'], $perTahun->map(fn($r) => [$r->tahun, $r->jumlah])->all());
 
         $ids = $this->kandidat($batas)->pluck('p.id')->all();
         $anak = [];
@@ -184,7 +209,7 @@ class ArsipkanCuti extends Command
     private function salin(string $sumber, string $tujuan, string $kolomKunci, array $ids): int
     {
         $kolom = collect(Schema::getColumnListing($sumber))
-            ->map(fn ($k) => "`{$k}`")
+            ->map(fn($k) => "`{$k}`")
             ->implode(', ');
         $placeholder = implode(',', array_fill(0, count($ids), '?'));
 

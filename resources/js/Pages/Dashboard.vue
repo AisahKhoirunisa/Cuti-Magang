@@ -518,7 +518,9 @@ const totalAnggota = computed(() => {
 // angka kartu SELALU sama dengan isi popup. Cadangan: cutiDisetujuiData.
 const sumberCutiHariIni = computed(() => {
     if (Array.isArray(props.timCutiHariIni)) return props.timCutiHariIni;
-    return Array.isArray(props.cutiDisetujuiData) ? props.cutiDisetujuiData : [];
+    return Array.isArray(props.cutiDisetujuiData)
+        ? props.cutiDisetujuiData
+        : [];
 });
 
 const cutiHariIniCount = computed(() => {
@@ -1135,13 +1137,10 @@ const cancelRevisiMode = () => {
 const minDate = computed(() => toDateStr(new Date()));
 
 const MAKS_RENTANG_HARI = 92;
-const MAKS_MULAI_TAHUN_KE_DEPAN = 2;
 
-const maxTanggalMulaiRevisi = computed(() => {
-    const d = new Date();
-    d.setFullYear(d.getFullYear() + MAKS_MULAI_TAHUN_KE_DEPAN);
-    return toDateStr(d);
-});
+const maxTanggalMulaiRevisi = computed(
+    () => `${new Date().getFullYear() + 1}-12-31`,
+);
 
 const maxTanggalSelesaiRevisi = computed(() => {
     const batasGlobal = maxTanggalMulaiRevisi.value;
@@ -1544,7 +1543,6 @@ const getStatusBadgeLabelSingkat = (status) => {
         ditangguhkan: "DITANGGUHKAN",
         dibatalkan_ditangguhkan: "DITANGGUHKAN",
         dibatalkan_reguler: "DIBATALKAN",
-        
     };
 
     return levelMap[status] || status.replace(/_/g, " ").toUpperCase();
@@ -3436,7 +3434,8 @@ const getCatatanAtasanList = (item) => {
                                     v-if="isMenungguTahunan(detailModal.data)"
                                     class="text-xs font-bold block mt-1.5"
                                     :class="
-                                        sisaSetelahDisetujui(detailModal.data) < 0
+                                        sisaSetelahDisetujui(detailModal.data) <
+                                        0
                                             ? 'text-red-600'
                                             : 'text-amber-800'
                                     "
@@ -3857,8 +3856,8 @@ const getCatatanAtasanList = (item) => {
                                     class="w-full min-h-[44px] px-2.5 py-1.5 border border-slate-200 rounded-lg text-base sm:text-sm focus:ring-amber-500 focus:border-amber-500"
                                 />
                                 <p class="text-[10px] text-slate-400 mt-1">
-                                    Maks. {{ MAKS_MULAI_TAHUN_KE_DEPAN }} tahun
-                                    dari hari ini
+                                    Maks. 31 Des
+                                    {{ new Date().getFullYear() + 1 }}
                                 </p>
                             </div>
                             <div>

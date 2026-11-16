@@ -63,6 +63,14 @@ const props = defineProps({
         type: Number,
         default: 0,
     },
+    // Batas tahun tanggal mulai pengajuan, mis. { min: 2024, max: 2027 }
+    // (dari LeaveYearWindow di CutiController@create). Tanggal di luar batas
+    // dikunci di kalender. null = backend belum mengirim, tidak ada pembatasan
+    // di kalender (server tetap penjaga akhir).
+    batas_tahun_pengajuan: {
+        type: Object,
+        default: null,
+    },
 });
 
 // Jalur cadangan jika props sisa_cuti tidak dikirim
@@ -463,13 +471,12 @@ const formatTanggalPendek = (dateStr) =>
     });
 
 // ================= BATAS RENTANG TANGGAL (selaras CutiController) =================
-// Pembatasan tanggal lampau dan batas "mulai maksimal 2 tahun ke depan" sudah
-// DIHAPUS: tanggal sebelum hari ini kini boleh dipilih, dan tanggal di masa
-// depan dibatasi oleh ketersediaan saldo tahun tujuan (lihat tahunTanpaSaldo),
-// bukan oleh batas tahun tetap.
-// Yang tersisa hanya batas panjang satu pengajuan:
-// backend MAKS_RENTANG_HARI = 92 (hari kalender inklusif).
-// Backend tetap penjaga akhir.
+// Tanggal mulai dibatasi ke jendela tahun (prop batas_tahun_pengajuan, dari
+// LeaveYearWindow): paling awal 1 Januari tahun min, paling akhir 31 Desember
+// tahun max. Tanggal di luar jendela dikunci di kalender (lihat
+// tanggalTerkunci). Tanggal sebelum hari ini tetap boleh dipilih (backdate).
+// Batas panjang satu pengajuan: backend MAKS_RENTANG_HARI = 92 (hari kalender
+// inklusif). Backend tetap penjaga akhir.
 const MAKS_RENTANG_HARI = 92; // hari kalender inklusif
 
 // Selesai: mulai + 91 hari (92 hari inklusif). null = belum ada tanggal mulai.
@@ -799,8 +806,9 @@ const tombolNonaktif = computed(
 //        tanggal lainnya tetap terpilih.
 //  - Ketuk tanggal DI TENGAH rentang → rentang dipersempit lewat tepi terdekat.
 //  - Tombol "Reset" mengosongkan semua pilihan.
-// Tanggal yang sudah lewat BOLEH dipilih. Satu-satunya yang dinonaktifkan
-// adalah tanggal yang membuat rentang melebihi 92 hari kalender.
+// Tanggal yang sudah lewat BOLEH dipilih. Yang dinonaktifkan: tanggal di luar
+// jendela tahun pengajuan, dan tanggal yang membuat rentang melebihi 92 hari
+// kalender.
 const sheetTanggalTerbuka = ref(false);
 const draftStart = ref(null);
 const draftEnd = ref(null); // null = cuti sehari (hanya draftStart)
@@ -882,10 +890,21 @@ const resetDraft = () => {
     draftEnd.value = null;
 };
 
-// Tanggal tidak boleh dipilih hanya bila perluasan rentang ke tanggal itu
-// melebihi MAKS_RENTANG_HARI. Tanggal lampau dan tanggal jauh di masa depan
-// tidak lagi dikunci di sini.
+// Tanggal tidak boleh dipilih bila:
+//  - tahunnya di luar jendela pengajuan (prop batas_tahun_pengajuan), atau
+//  - perluasan rentang ke tanggal itu melebihi MAKS_RENTANG_HARI.
 const tanggalTerkunci = (dateStr) => {
+    // Batas jendela tahun (min..max), bila dikirim backend.
+    if (props.batas_tahun_pengajuan) {
+        const th = Number(dateStr.slice(0, 4));
+        if (
+            th < props.batas_tahun_pengajuan.min ||
+            th > props.batas_tahun_pengajuan.max
+        ) {
+            return true;
+        }
+    }
+
     const s = draftStart.value;
     if (!s) return false;
     const e = draftEnd.value || s;
@@ -1040,7 +1059,7 @@ const bandClass = (c) => {
 //  - terpilih (awal/akhir) : isi HIJAU penuh, teks putih
 //  - di dalam rentang       : latar hijau muda dari band (sel transparan)
 //  - terkunci               : abu-abu pudar, tidak bisa diketuk
-//                             (hanya karena melebihi batas 92 hari)
+//                             (di luar jendela tahun, atau melebihi 92 hari)
 //  - tidak dipilih          : isi PUTIH
 // Efek hover hanya di perangkat yang punya kursor.
 const cellClass = (c) => {

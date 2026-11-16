@@ -8,6 +8,7 @@ use App\Models\CutiDitangguhkan;
 use App\Models\Notifikasi;
 use App\Models\Pegawai;
 use App\Models\ApprovalLog;
+use App\Support\RincianSaldo;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Illuminate\Support\Facades\Auth;
@@ -39,9 +40,6 @@ use Illuminate\Support\Facades\DB;
 // ================= END PERBAIKAN SINKRONISASI RUMUS SALDO =================
 //
 // ================= PERBAIKAN BARU (CUTI LINTAS TAHUN) =================
-//   - index()  : "terpakai" untuk modal Rincian Sisa Cuti dihitung PER TAHUN
-//                lewat SaldoCuti::hariCutiDiTahun() (cuti lintas tahun hanya
-//                dihitung bagian yang jatuh di tahun berjalan).
 //   - process(): saat L4 menyetujui, saldo dicek PER TAHUN (hari kerja di tiap
 //                tahun vs total tersedia tahun itu). Kolom legacy `sisa`
 //                dikurangi per tahun lewat SaldoCuti::sesuaikanSisaLegacy().
@@ -60,6 +58,14 @@ use Illuminate\Support\Facades\DB;
 //          dipaginasi. Nama prop 'antrean' dipertahankan untuk pagination.
 //   - Jendela tahun: 2 tahun ke belakang, 1 ke depan.
 // ================= END PERBAIKAN FILTER TAHUN =================
+//
+// ================= PERBAIKAN BARU (RINCIAN SALDO PER PENGAJUAN) =================
+//   - index(): "Rincian Sisa Cuti" di modal Detail kini dihitung PER PENGAJUAN
+//     sesuai tahun cutinya lewat App\Support\RincianSaldo::lengkapi()
+//     (sebelumnya semua pengajuan memakai saldo tahun berjalan/2026).
+//     Blok perhitungan batch lama (terpakai/Tgh/dikembalikan) dipindahkan ke
+//     RincianSaldo. hitungInfoSaldo() tetap dipakai oleh process().
+// ================= END PERBAIKAN RINCIAN SALDO =================
 class MonitoringCutiController extends Controller
 {
     // Status yang dianggap "masih menunggu persetujuan".
@@ -319,99 +325,41 @@ class MonitoringCutiController extends Controller
             ->paginate(10)
             ->withQueryString();
 
-        // Hitung sisa cuti dinamis (rumus SAMA dengan Dashboard & Rekap Kuota,
-        // lihat hitungInfoSaldo()) untuk setiap item di KEDUA daftar. Semua data
-        // dihitung dengan query ter-batch (tanpa N+1).
-        $tahun = (int) date('Y');
-
         $semuaItem = $menunggu->concat($antrean->getCollection());
 
-        $pegawaiIdsHalamanIni = $semuaItem
-            ->pluck('pegawai_id')
-            ->filter()
-            ->unique()
-            ->values()
-            ->all();
-
-        // Terpakai per pegawai dihitung PER TAHUN: cuti yang beririsan
-        // dengan tahun berjalan diambil, lalu hanya bagian di tahun itu yang dijumlah.
-        $terpakaiPerPegawai = empty($pegawaiIdsHalamanIni)
-            ? collect()
-            : PengajuanCuti::whereIn('pegawai_id', $pegawaiIdsHalamanIni)
-                ->where('jenis_cuti', 'Cuti Tahunan')
-                ->where('status', 'disetujui')
-                ->whereDate('tanggal_mulai', '<=', "{$tahun}-12-31")
-                ->whereDate('tanggal_selesai', '>=', "{$tahun}-01-01")
-                ->get(['pegawai_id', 'tanggal_mulai', 'tanggal_selesai', 'jumlah_hari'])
-                ->groupBy('pegawai_id')
-                ->map(function ($baris) use ($tahun) {
-                    return $baris->sum(function ($cuti) use ($tahun) {
-                        return SaldoCuti::hariCutiDiTahun(
-                            $cuti->tanggal_mulai,
-                            $cuti->tanggal_selesai,
-                            (int) $cuti->jumlah_hari,
-                            $tahun
-                        );
-                    });
-                });
-
-        // Saldo TAHUN LALU (untuk syarat akumulasi penuh 12/12), satu query.
-        $saldoTahunLaluPerPegawai = empty($pegawaiIdsHalamanIni)
-            ? collect()
-            : SaldoCuti::whereIn('pegawai_id', $pegawaiIdsHalamanIni)
-                ->where('tahun', $tahun - 1)
-                ->get()
-                ->keyBy('pegawai_id');
-
-        // Tgh (cuti ditangguhkan), sumber SAMA dengan Dashboard:
-        // tabel cuti_ditangguhkans, SUM jumlah_hari per pegawai & tahun_asal.
-        //   - tahun ini  -> ikut dihitung sebagai terpakai
-        //   - tahun lalu -> "dikembalikan" ke saldo tahun ini
-        $tghBaris = empty($pegawaiIdsHalamanIni)
-            ? collect()
-            : CutiDitangguhkan::whereIn('pegawai_id', $pegawaiIdsHalamanIni)
-                ->whereIn('tahun_asal', [$tahun, $tahun - 1])
-                ->get(['pegawai_id', 'tahun_asal', 'jumlah_hari']);
-
-        $tangguhPerPegawai = $tghBaris
-            ->where('tahun_asal', $tahun)
-            ->groupBy('pegawai_id')
-            ->map(fn($baris) => (int) $baris->sum('jumlah_hari'));
-
-        $dikembalikanPerPegawai = $tghBaris
-            ->where('tahun_asal', $tahun - 1)
-            ->groupBy('pegawai_id')
-            ->map(fn($baris) => (int) $baris->sum('jumlah_hari'));
+        // Rincian Sisa Cuti per pengajuan, sesuai tahun cutinya.
+        RincianSaldo::lengkapi($menunggu, $tahunFilter);
+        RincianSaldo::lengkapi($antrean->getCollection(), $tahunFilter);
 
         // ================= NAMA ASLI ATASAN L1 & L2 =================
         // Dua PETA (bukan query per baris, supaya tidak N+1):
         //   $petaAtasanL2 : kelompok_substansi -> Ketua Kelompok (role_id 3)
         //   $petaAtasanL1 : tim_kerja          -> Ketua Tim Kerja (role_id 2)
-        $kelompokUnikHalamanIni = $semuaItem
+        $kelompokUnik = $semuaItem
             ->pluck('pegawai.kelompok_substansi')
             ->filter()
             ->unique()
             ->values()
             ->all();
 
-        $timKerjaUnikHalamanIni = $semuaItem
+        $timKerjaUnik = $semuaItem
             ->pluck('pegawai.tim_kerja')
             ->filter(fn($t) => $t && $t !== '-')
             ->unique()
             ->values()
             ->all();
 
-        $petaAtasanL2 = empty($kelompokUnikHalamanIni)
+        $petaAtasanL2 = empty($kelompokUnik)
             ? collect()
             : Pegawai::where('role_id', 3)
-                ->whereIn('kelompok_substansi', $kelompokUnikHalamanIni)
+                ->whereIn('kelompok_substansi', $kelompokUnik)
                 ->get()
                 ->keyBy('kelompok_substansi');
 
-        $petaAtasanL1 = empty($timKerjaUnikHalamanIni)
+        $petaAtasanL1 = empty($timKerjaUnik)
             ? collect()
             : Pegawai::where('role_id', 2)
-                ->whereIn('tim_kerja', $timKerjaUnikHalamanIni)
+                ->whereIn('tim_kerja', $timKerjaUnik)
                 ->get()
                 ->keyBy('tim_kerja');
 
@@ -425,53 +373,18 @@ class MonitoringCutiController extends Controller
         // ================= END NAMA ASLI ATASAN L1 & L2 =================
 
         // Satu closure yang sama dipakai untuk KEDUA daftar.
-        $perkaya = function ($item) use (
-            $terpakaiPerPegawai,
-            $saldoTahunLaluPerPegawai,
-            $tangguhPerPegawai,
-            $dikembalikanPerPegawai,
-            $petaAtasanL1,
-            $petaAtasanL2,
-            $namaAtasanL3,
-            $namaAtasanL4
-        ) {
+        $perkaya = function ($item) use ($petaAtasanL1, $petaAtasanL2, $namaAtasanL3, $namaAtasanL4) {
             // Lewati kalau relasi pegawai tidak ada (mis. data pegawai terhapus)
             if (!$item->pegawai) {
                 return $item;
             }
 
-            $saldo = $item->pegawai->saldoCutiTahunIni ?? null;
-
-            $info = $this->hitungInfoSaldo(
-                $saldo,
-                $saldoTahunLaluPerPegawai->get($item->pegawai_id),
-                (int) ($terpakaiPerPegawai[$item->pegawai_id] ?? 0),
-                (int) ($tangguhPerPegawai[$item->pegawai_id] ?? 0),
-                (int) ($dikembalikanPerPegawai[$item->pegawai_id] ?? 0)
-            );
-
-            // Nama lama dipertahankan (kompatibilitas), nama baru ditambahkan
-            // supaya modal bisa menampilkan rincian yang sama dengan Dashboard.
-            $item->pegawai->sisa_cuti_tersedia      = $info['total_cuti_tersedia'];
-            $item->pegawai->kuota_tahunan           = $info['kuota_tahunan'];
-            $item->pegawai->sisa_tahun_lalu         = $info['sisa_tahun_lalu'];
-            $item->pegawai->cuti_terpakai           = $info['cuti_terpakai'];
-            $item->pegawai->cuti_terpakai_total     = $info['cuti_terpakai_total'];
-            $item->pegawai->cuti_ditangguhkan       = $info['cuti_ditangguhkan'];
-            $item->pegawai->sisa_dua_tahun_lalu     = $info['sisa_dua_tahun_lalu'];
-            $item->pegawai->sisa_hak_tahun_berjalan = $info['sisa_hak_tahun_berjalan'];
-            $item->pegawai->saldo_bawaan_eligible   = $info['saldo_bawaan_eligible'];
-            $item->pegawai->cuti_dikembalikan       = $info['cuti_dikembalikan'];
-            $item->pegawai->total_cuti_tersedia     = $info['total_cuti_tersedia'];
-
             // Nama asli atasan L1 & L2; fallback ke teks generik kalau jabatan lowong.
-            $timKerjaPegawai = $item->pegawai->tim_kerja;
-            $kelompokPegawai = $item->pegawai->kelompok_substansi;
+            $tim      = $item->pegawai->tim_kerja;
+            $kelompok = $item->pegawai->kelompok_substansi;
 
-            $atasanL1 = ($timKerjaPegawai && $timKerjaPegawai !== '-')
-                ? ($petaAtasanL1[$timKerjaPegawai] ?? null)
-                : null;
-            $atasanL2 = $petaAtasanL2[$kelompokPegawai] ?? null;
+            $atasanL1 = ($tim && $tim !== '-') ? ($petaAtasanL1[$tim] ?? null) : null;
+            $atasanL2 = $kelompok ? ($petaAtasanL2[$kelompok] ?? null) : null;
 
             $item->atasan_l1_nama = $atasanL1->nama ?? 'Ketua Tim Kerja Pegawai';
             $item->atasan_l2_nama = $atasanL2->nama ?? 'Ketua Kelompok Substansi';
