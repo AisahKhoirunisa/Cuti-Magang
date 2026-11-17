@@ -1,11 +1,14 @@
 <?php
 
+
 namespace App\Models;
+
 
 use App\Services\CarryOverSaldoService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+
 
 // ================= PERBAIKAN (CUTI LINTAS TAHUN) =================
 // Cuti Tahunan yang melintasi pergantian tahun (mis. 29 Des 2026 - 4 Jan 2027)
@@ -23,18 +26,31 @@ use Illuminate\Support\Facades\DB;
 // Cuti yang SELURUHNYA berada dalam satu tahun tetap memakai jumlah_hari
 // apa adanya, sehingga hasilnya sama persis dengan perilaku lama.
 // ================= END PERBAIKAN =================
-
-// ================= PERBAIKAN (KOREKSI CUTI PER BULAN) =================
-// Admin HR kini mengoreksi Cuti Terpakai PER BULAN di Rekap Laporan
-// (tabel koreksi_cuti_bulanan, model KoreksiCutiBulanan). Rekap Kuota Detail
-// hanya menampilkan total, sehingga angkanya selalu satu sumber.
 //
-//   - terpakaiMurniPerBulan(): rincian hitungan sistem per bulan [1..12 => hari].
-//   - terpakaiEfektif()      : bila ada koreksi bulanan di tahun itu,
-//                              efektif = terpakaiMurni + SUM(koreksi - sistem)
-//                              untuk bulan yang dikoreksi. Bila tidak ada,
-//                              perilaku lama (koreksi_saldo tahunan / terpakaiMurni).
-// ================= END PERBAIKAN =================
+// ================= PERUBAHAN (KOREKSI BULANAN REKAP LAPORAN) =================
+//   - terpakaiMurniPerBulan() : method BARU. Hitungan sistem murni per bulan
+//                               [1..12 => hari kerja], dipakai updateKoreksiLaporan()
+//                               (AdminController) dan terpakaiEfektif().
+//   - terpakaiEfektif()       : kini mengenal koreksi BULANAN (tabel
+//                               koreksi_cuti_bulanan). Urutan prioritas:
+//                                 1) koreksi bulanan  -> terpakaiMurni + SUM(selisih)
+//                                 2) koreksi_saldo tahunan lama
+//                                 3) hitungan sistem (terpakaiMurni)
+//
+// ================= PERBAIKAN (KOREKSI = SELISIH, BUKAN ANGKA MUTLAK) =================
+// Koreksi bulanan sekarang berlaku sebagai SELISIH (tambah/kurang) terhadap
+// hitungan sistem, bukan angka mutlak yang menimpa sistem.
+//   selisih  = nilai - nilai_sistem   (nilai_sistem = hitungan sistem SAAT koreksi dibuat)
+//   tampil   = hitungan sistem SEKARANG + selisih
+//
+// Contoh: sistem 3, Admin HR koreksi jadi 4 (selisih +1). Lalu ada cuti baru
+// disetujui, sistem jadi 4 -> tampil 4 + 1 = 5 (bukan tetap 4).
+//
+//   - petaSelisihTahun() : method BARU, [bulan => nilai - nilai_sistem].
+//   - terpakaiEfektif()  : memakai selisih di atas (sebelumnya nilai - sistem
+//                          SEKARANG, sehingga cuti baru "hilang").
+// Data lama tidak perlu dimigrasi: kolom nilai & nilai_sistem sudah tersimpan.
+// ================= END PERUBAHAN =================
 class SaldoCuti extends Model
 {
     /**
@@ -45,8 +61,10 @@ class SaldoCuti extends Model
      */
     public const ROLE_ADMIN_HR = 5;
 
+
     /** Batas atas hak + bawaan (dipakai hanya bila TERAPKAN_BATAS_ATAS_TOTAL_HAK = true). */
     public const BATAS_ATAS_TOTAL_HAK = 24;
+
 
     /**
      * Sakelar batas atas Hak + Bawaan.
@@ -60,17 +78,22 @@ class SaldoCuti extends Model
      */
     public const TERAPKAN_BATAS_ATAS_TOTAL_HAK = false;
 
+
     /** Batas rantai tahun yang ikut disinkronkan sekali jalan (pengaman). */
     private const BATAS_RANTAI_SINKRON = 5;
 
+
     protected $guarded = ['id'];
+
 
     protected $casts = [
         'koreksi_saldo' => 'integer', // nullable: NULL tetap NULL, tidak jadi 0
     ];
 
+
     // Cache daftar tanggal libur selama satu request (satu query saja).
     private static ?array $cacheLibur = null;
+
 
     /**
      * Hitung estimasi sisa cuti yang bisa dibawa ke tahun depan (Carry Forward).
@@ -84,7 +107,9 @@ class SaldoCuti extends Model
         return (int) min(max($sisaCutiTahunBerjalan, 0), 6);
     }
 
+
     // ================= HELPER: PEMBAGIAN HARI PER TAHUN =================
+
 
     /** Daftar tanggal libur (Y-m-d), di-cache per request. */
     public static function tanggalLibur(): array
@@ -95,8 +120,10 @@ class SaldoCuti extends Model
                 ->all();
         }
 
+
         return self::$cacheLibur;
     }
+
 
     /** Kosongkan cache libur (mis. setelah libur diubah di request yang sama / saat pengujian). */
     public static function lupakanCacheLibur(): void
@@ -104,17 +131,23 @@ class SaldoCuti extends Model
         self::$cacheLibur = null;
     }
 
+
     /**
      * Hari kerja (tanpa akhir pekan & hari libur) dari rentang [$mulai, $selesai]
      * yang jatuh DI DALAM tahun $tahun.
      */
-    public static function hariKerjaDiTahun($mulai, $selesai, int $tahun): int
-    {
+    public static function hariKerjaDiTahun(
+        \DateTimeInterface|string $mulai,
+        \DateTimeInterface|string $selesai,
+        int $tahun
+    ): int {
         $awal = Carbon::parse($mulai)->startOfDay();
         $akhir = Carbon::parse($selesai)->startOfDay();
 
+
         $batasAwal = Carbon::create($tahun, 1, 1)->startOfDay();
         $batasAkhir = Carbon::create($tahun, 12, 31)->startOfDay();
+
 
         if ($awal->lt($batasAwal)) {
             $awal = $batasAwal;
@@ -126,8 +159,10 @@ class SaldoCuti extends Model
             return 0;
         }
 
+
         $libur = array_flip(self::tanggalLibur());
         $jumlah = 0;
+
 
         for ($tgl = $awal->copy(); $tgl->lte($akhir); $tgl->addDay()) {
             if (!$tgl->isWeekend() && !isset($libur[$tgl->toDateString()])) {
@@ -135,44 +170,59 @@ class SaldoCuti extends Model
             }
         }
 
+
         return $jumlah;
     }
+
 
     /**
      * Berapa hari cuti (jumlah_hari) yang menjadi beban tahun $tahun.
      *   - Cuti satu tahun  : seluruh $jumlahHari bila tahunnya sama, selain itu 0.
      *   - Cuti lintas tahun: hari kerja yang jatuh di tahun itu.
      */
-    public static function hariCutiDiTahun($mulai, $selesai, int $jumlahHari, int $tahun): int
-    {
+    public static function hariCutiDiTahun(
+        \DateTimeInterface|string $mulai,
+        \DateTimeInterface|string $selesai,
+        int $jumlahHari,
+        int $tahun
+    ): int {
         $tahunMulai = Carbon::parse($mulai)->year;
         $tahunSelesai = Carbon::parse($selesai)->year;
+
 
         if ($tahunMulai === $tahunSelesai) {
             return $tahunMulai === $tahun ? $jumlahHari : 0;
         }
 
+
         return self::hariKerjaDiTahun($mulai, $selesai, $tahun);
     }
+
 
     /**
      * Rincian [tahun => hari] untuk satu pengajuan, mis. [2026 => 3, 2027 => 2].
      */
-    public static function hariPerTahunDariPengajuan($mulai, $selesai, int $jumlahHari): array
-    {
+    public static function hariPerTahunDariPengajuan(
+        \DateTimeInterface|string $mulai,
+        \DateTimeInterface|string $selesai,
+        int $jumlahHari
+    ): array {
         $tahunMulai = Carbon::parse($mulai)->year;
         $tahunSelesai = Carbon::parse($selesai)->year;
+
 
         $hasil = [];
         for ($tahun = $tahunMulai; $tahun <= $tahunSelesai; $tahun++) {
             $hasil[$tahun] = self::hariCutiDiTahun($mulai, $selesai, $jumlahHari, $tahun);
         }
 
+
         return $hasil;
     }
 
+
     /**
-     * Tambah ($arah = +1) atau kurangi ($arah = -1) kolom legacy `sisa` pada
+     * Tambah (arah = +1) atau kurangi (arah = -1) kolom legacy `sisa` pada
      * baris saldo SETIAP tahun yang disentuh pengajuan, sesuai hari di tahun
      * itu. Tidak pernah di bawah 0. Hanya untuk Cuti Tahunan.
      * Panggil DI DALAM DB::transaction.
@@ -185,16 +235,19 @@ class SaldoCuti extends Model
             (int) $pengajuan->jumlah_hari
         );
 
+
         // Urutan tahun selalu menaik, sehingga urutan lock konsisten (aman dari deadlock).
         foreach ($rincian as $tahun => $hari) {
             if ($hari <= 0) {
                 continue;
             }
 
+
             $saldo = static::where('pegawai_id', $pengajuan->pegawai_id)
                 ->where('tahun', $tahun)
                 ->lockForUpdate()
                 ->first();
+
 
             if ($saldo) {
                 $saldo->update(['sisa' => max(0, (int) $saldo->sisa + ($arah * $hari))]);
@@ -203,12 +256,13 @@ class SaldoCuti extends Model
     }
     // ================= END HELPER PEMBAGIAN HARI PER TAHUN =================
 
+
     // ================= AUTO-SYNC BAWAAN TAHUN BERIKUTNYA =================
     // Dipanggil setiap kali saldo / pemakaian cuti suatu tahun berubah (edit
-    // pegawai, ubah saldo, approve / batal / tangguhkan / revisi cuti, koreksi
-    // bulanan Rekap Laporan), supaya dompet tahun BERIKUTNYA yang sudah ada
-    // tetap sesuai. Command GenerateSaldoCutiTahunBaru sengaja melewati dompet
-    // yang sudah ada karena angkanya dijaga oleh method ini.
+    // pegawai, ubah saldo, approve / batal / tangguhkan / revisi cuti), supaya
+    // dompet tahun BERIKUTNYA yang sudah ada tetap sesuai. Command
+    // GenerateSaldoCutiTahunBaru sengaja melewati dompet yang sudah ada karena
+    // angkanya dijaga oleh method ini.
     //
     // Rumus SAMA PERSIS dengan Command Generate (lewat CarryOverSaldoService):
     //   carry_forward_normal = SISA MENTAH tahun sebelumnya (Hak - Terpakai),
@@ -216,7 +270,7 @@ class SaldoCuti extends Model
     //   bawaan eligible      = hitungBawaan(sisa N-2, sisa N-1, kuota)
     //   total hak            = kuota_tahunan + bawaan eligible
     //   sisa                 = max(0, total hak - terpakaiEfektif)
-    //   terpakai             = terpakaiEfektif (ikut koreksi Admin HR)
+    //   terpakai             = terpakaiMurni
     // kuota_tahunan & koreksi_saldo tidak diubah.
     //
     // Hanya dompet ASLI (kuota_tahunan > 0) yang disinkronkan. Baris bayangan
@@ -224,6 +278,7 @@ class SaldoCuti extends Model
     // pegawai yang belum punya dompet tahun berikutnya dilewati (itu tugas
     // Generate / pembuatan pegawai baru). Perubahan menjalar ke tahun-tahun
     // sesudahnya selama dompetnya ada (maksimal BATAS_RANTAI_SINKRON tahun).
+
 
     /**
      * Hitung ulang dompet tahun ($tahun + 1) milik pegawai, lalu lanjut ke
@@ -233,38 +288,48 @@ class SaldoCuti extends Model
     {
         $service = app(CarryOverSaldoService::class);
 
+
         for ($i = 0; $i < self::BATAS_RANTAI_SINKRON; $i++) {
             $tahunTarget = $tahun + 1 + $i;
+
 
             $dompet = static::where('pegawai_id', $pegawaiId)
                 ->where('tahun', $tahunTarget)
                 ->first();
 
+
             if (!$dompet || (int) $dompet->kuota_tahunan <= 0) {
                 break;
             }
 
+
             // Sisa mentah tahun sebelumnya (Hak - Terpakai).
             $carry = $service->carryDariSaldoBiasa($pegawaiId, $tahunTarget);
             $kuota = (int) $dompet->kuota_tahunan;
+
 
             // Sisa N-2 untuk aturan akumulasi 12 + 12.
             $duaTahunLalu = (int) (static::where('pegawai_id', $pegawaiId)
                 ->where('tahun', $tahunTarget - 1)
                 ->value('carry_forward_normal') ?? 0);
 
+
             // hitungBawaan() sudah menangani aturan 6/12 dan batas 24 (jika aktif).
             $totalHak = $kuota + static::hitungBawaan($duaTahunLalu, $carry, $kuota);
 
+
+            $terpakaiMurni = static::terpakaiMurni($pegawaiId, $tahunTarget);
             $terpakaiEfektif = static::terpakaiEfektif($pegawaiId, $tahunTarget, $dompet);
+
 
             $dompet->update([
                 'carry_forward_normal' => $carry,
                 'sisa' => max(0, $totalHak - $terpakaiEfektif),
-                'terpakai' => $terpakaiEfektif,
+                'terpakai' => $terpakaiMurni,
             ]);
         }
     }
+
 
     /**
      * Sinkronkan bawaan untuk setiap tahun yang disentuh sebuah pengajuan
@@ -278,14 +343,17 @@ class SaldoCuti extends Model
             return;
         }
 
+
         $tahunMulai = Carbon::parse($pengajuan->tanggal_mulai)->year;
         $tahunSelesai = Carbon::parse($pengajuan->tanggal_selesai)->year;
+
 
         for ($tahun = $tahunMulai; $tahun <= $tahunSelesai; $tahun++) {
             static::sinkronkanBawaan((int) $pengajuan->pegawai_id, $tahun);
         }
     }
     // ================= END AUTO-SYNC BAWAAN =================
+
 
     /**
      * Cuti Tahunan berstatus disetujui yang benar-benar terpakai untuk satu pegawai & tahun.
@@ -300,6 +368,7 @@ class SaldoCuti extends Model
             ->whereDate('tanggal_selesai', '>=', "{$tahun}-01-01")
             ->get(['tanggal_mulai', 'tanggal_selesai', 'jumlah_hari']);
 
+
         $total = 0;
         foreach ($cutis as $cuti) {
             $total += self::hariCutiDiTahun(
@@ -310,20 +379,27 @@ class SaldoCuti extends Model
             );
         }
 
+
         return (int) $total;
     }
 
+
     /**
-     * Rincian hitungan SISTEM per bulan untuk satu pegawai & tahun:
-     * [1 => hari, 2 => hari, ... 12 => hari].
+     * [KOREKSI BULANAN] Hitungan sistem murni per bulan (tanpa koreksi Admin HR),
+     * hanya hari kerja (Senin-Jumat di luar hari_liburs) yang jatuh di $tahun.
+     * Kunci hasil: 1..12 (integer), selalu lengkap (bulan tanpa cuti = 0).
      *
-     * Aturan hari SAMA dengan Rekap Laporan (AdminController::buildLaporanData):
-     * Senin-Jumat di luar tabel hari_liburs, hanya Cuti Tahunan berstatus
-     * disetujui, dan hanya hari yang jatuh di $tahun.
+     * Pembagian hari SAMA dengan hitungHariCutiPerBulan() di AdminController,
+     * jadi kotak bulan di Rekap Laporan dan angka "Sistem" di form koreksi
+     * selalu sejalan.
+     *
+     * @return array<int,int>
      */
     public static function terpakaiMurniPerBulan(int $pegawaiId, int $tahun): array
     {
         $hasil = array_fill(1, 12, 0);
+        $libur = array_flip(self::tanggalLibur());
+
 
         $cutis = PengajuanCuti::where('pegawai_id', $pegawaiId)
             ->where('jenis_cuti', 'Cuti Tahunan')
@@ -332,74 +408,90 @@ class SaldoCuti extends Model
             ->whereDate('tanggal_selesai', '>=', "{$tahun}-01-01")
             ->get(['tanggal_mulai', 'tanggal_selesai']);
 
-        if ($cutis->isEmpty()) {
-            return $hasil;
-        }
-
-        $libur = array_flip(self::tanggalLibur());
-        $batasAwal = Carbon::create($tahun, 1, 1)->startOfDay();
-        $batasAkhir = Carbon::create($tahun, 12, 31)->startOfDay();
 
         foreach ($cutis as $cuti) {
-            $awal = Carbon::parse($cuti->tanggal_mulai)->startOfDay();
-            $akhir = Carbon::parse($cuti->tanggal_selesai ?? $cuti->tanggal_mulai)->startOfDay();
+            $mulai = Carbon::parse($cuti->tanggal_mulai)->startOfDay();
+            $selesai = Carbon::parse($cuti->tanggal_selesai ?? $cuti->tanggal_mulai)->startOfDay();
 
-            if ($awal->lt($batasAwal)) {
-                $awal = $batasAwal->copy();
-            }
-            if ($akhir->gt($batasAkhir)) {
-                $akhir = $batasAkhir->copy();
-            }
 
-            for ($tgl = $awal->copy(); $tgl->lte($akhir); $tgl->addDay()) {
-                if ($tgl->isWeekend() || isset($libur[$tgl->toDateString()])) {
+            for ($d = $mulai->copy(); $d->lte($selesai); $d->addDay()) {
+                if ($d->year !== $tahun || $d->isWeekend() || isset($libur[$d->toDateString()])) {
                     continue;
                 }
-                $hasil[$tgl->month]++;
+
+
+                $hasil[$d->month]++;
             }
         }
+
 
         return $hasil;
     }
+
+
+    /**
+     * [KOREKSI BULANAN] Selisih koreksi Admin HR per bulan:
+     * [bulan => nilai - nilai_sistem].
+     *
+     * nilai_sistem = hitungan sistem saat koreksi dibuat, jadi selisih ini
+     * tetap berlaku walau hitungan sistem berubah sesudahnya (mis. ada cuti
+     * baru disetujui). Koreksi bersifat TAMBAH/KURANG, bukan angka mutlak.
+     *
+     * @return array<int,int>
+     */
+    public static function petaSelisihTahun(int $pegawaiId, int $tahun): array
+    {
+        return KoreksiCutiBulanan::where('pegawai_id', $pegawaiId)
+            ->where('tahun', $tahun)
+            ->get(['bulan', 'nilai', 'nilai_sistem'])
+            ->mapWithKeys(fn($b) => [(int) $b->bulan => (int) $b->nilai - (int) $b->nilai_sistem])
+            ->all();
+    }
+
 
     /**
      * Cuti Tahunan terpakai EFEKTIF untuk satu pegawai & tahun.
      *
      * Urutan prioritas:
-     *   1) Ada koreksi BULANAN (koreksi_cuti_bulanan) di tahun itu:
-     *        efektif = terpakaiMurni + SUM(nilai koreksi - hitungan sistem bulan itu)
-     *        hanya untuk bulan yang dikoreksi (minimal 0).
-     *   2) Tidak ada koreksi bulanan, koreksi_saldo (tahunan, data lama) terisi:
-     *        angka koreksi_saldo dipakai apa adanya (termasuk 0).
-     *   3) Selain itu: ikut hitungan sistem (terpakaiMurni).
+     *   1) Koreksi BULANAN Admin HR (tabel koreksi_cuti_bulanan), bila ada:
+     *        terpakaiMurni + SUM(selisih koreksi)
+     *      di mana selisih = nilai - nilai_sistem (lihat petaSelisihTahun()).
+     *      Rumus ini SAMA dengan buildLaporanData() & updateKoreksiLaporan().
+     *   2) koreksi_saldo TAHUNAN lama (data lama yang belum dikonversi):
+     *        angka koreksi dipakai apa adanya (termasuk 0).
+     *   3) Hitungan sistem: terpakaiMurni().
+     *
+     * Koreksi bulanan pertama pada suatu tahun menghapus koreksi_saldo tahunan
+     * (lihat updateKoreksiLaporan()), jadi kedua jenis koreksi tidak berjalan
+     * bersamaan.
      */
     public static function terpakaiEfektif(
         int $pegawaiId,
         int $tahun,
         ?self $saldo = null
     ): int {
-        $peta = KoreksiCutiBulanan::petaTahun($pegawaiId, $tahun);
+        // 1) Koreksi bulanan (sebagai SELISIH terhadap hitungan sistem)
+        $selisihPerBulan = static::petaSelisihTahun($pegawaiId, $tahun);
 
-        if (!empty($peta)) {
-            $murni = static::terpakaiMurni($pegawaiId, $tahun);
-            $perBulan = static::terpakaiMurniPerBulan($pegawaiId, $tahun);
 
-            $selisih = 0;
-            foreach ($peta as $bulan => $nilai) {
-                $selisih += (int) $nilai - (int) ($perBulan[$bulan] ?? 0);
-            }
-
-            return max(0, $murni + $selisih);
+        if (!empty($selisihPerBulan)) {
+            return max(0, static::terpakaiMurni($pegawaiId, $tahun) + array_sum($selisihPerBulan));
         }
 
+
+        // 2) Koreksi tahunan lama
         $saldo ??= static::where('pegawai_id', $pegawaiId)->where('tahun', $tahun)->first();
+
 
         if ($saldo && $saldo->koreksi_saldo !== null) {
             return max(0, (int) $saldo->koreksi_saldo);
         }
 
+
+        // 3) Hitungan sistem
         return static::terpakaiMurni($pegawaiId, $tahun);
     }
+
 
     /**
      * Saldo bawaan yang eligible.
@@ -416,12 +508,15 @@ class SaldoCuti extends Model
             ? 12
             : min(6, max(0, $sisaTahunLalu));
 
+
         if (self::TERAPKAN_BATAS_ATAS_TOTAL_HAK) {
             return max(0, min($normal, self::BATAS_ATAS_TOTAL_HAK - $kuota));
         }
 
+
         return max(0, $normal);
     }
+
 
     /**
      * Apakah baris saldo untuk pegawai & tahun ini sudah dibuat
@@ -433,6 +528,7 @@ class SaldoCuti extends Model
     {
         return static::where('pegawai_id', $pegawaiId)->where('tahun', $tahun)->exists();
     }
+
 
     /**
      * Jumlah pegawai aktif yang belum punya baris saldo untuk tahun tertentu.
@@ -449,7 +545,7 @@ class SaldoCuti extends Model
     {
         return Pegawai::query()
             ->where('role_id', '!=', self::ROLE_ADMIN_HR)
-            ->where(fn ($q) => $q->where('status_aktif', 'Aktif')->orWhereNull('status_aktif'))
+            ->where(fn($q) => $q->where('status_aktif', 'Aktif')->orWhereNull('status_aktif'))
             ->whereNotExists(function ($q) use ($tahun) {
                 $q->select(DB::raw(1))
                     ->from('saldo_cutis')

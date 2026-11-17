@@ -1,6 +1,8 @@
 <?php
 
+
 namespace App\Http\Controllers;
+
 
 use App\Models\CutiDitangguhkan;
 use App\Models\Pegawai;
@@ -12,6 +14,23 @@ use Illuminate\Support\Facades\Auth;
 use Inertia\Inertia;
 use Carbon\Carbon;
 
+
+// ================= CATATAN PENGGABUNGAN 2 VERSI =================
+// File ini menggabungkan dua versi DashboardController yang berbeda cabang:
+//   A) versi "lintas tahun": chart/KPI/kalender beririsan tahun, anggota tim
+//      aktif per tahun, RincianSaldo, cutiDisetujuiBulanIni, atasan & L3 ikut
+//      di daftar anggota.
+//   B) versi "hierarki": anggota tim hanya level di BAWAH pengguna, akun sendiri
+//      tidak ikut, dan status cuti pejabat L3 & L4 dikirim terpisah lewat
+//      props 'atasanPejabat'.
+// Semua perhitungan data (A) dipakai penuh. Aturan keanggotaan tim A dan B
+// saling bertentangan, jadi dipilih lewat SATU konstanta:
+//     MODE_ATASAN_TERPISAH = false  -> perilaku A (atasan & L3 ikut di daftar)
+//     MODE_ATASAN_TERPISAH = true   -> perilaku B (hierarki + bagian "Atasan")
+// Props yang dikirim ke Dashboard.vue sama di kedua mode (di mode false,
+// 'atasanPejabat' berupa daftar kosong).
+// ================= END CATATAN PENGGABUNGAN =================
+//
 // ================= PERBAIKAN (L4 / KEPALA BIRO DISETUJUI OTOMATIS) =================
 // Semua query yang memuat relasi 'approvalLogs' memakai
 // 'approvalLogs.approver:id,nama,jabatan' (eager load terbatas). Tanpa ini,
@@ -33,6 +52,17 @@ use Carbon\Carbon;
 //   3. 'total_anggota_tim' dihitung dari hasil query yang sama dengan
 //      daftar 'anggotaTim', jadi angkanya pasti cocok dengan daftar.
 // ================= END PERBAIKAN TOTAL ANGGOTA TIM =================
+//
+// ================= PERBAIKAN (HIERARKI ANGGOTA TIM & BAGIAN "ATASAN") =================
+// Hanya berlaku bila MODE_ATASAN_TERPISAH = true.
+// - Daftar 'anggotaTim' hanya berisi orang yang levelnya DI BAWAH pengguna
+//   (lihat $roleBawahan di queryAnggotaTim()). Pejabat L3 & L4 tidak ikut
+//   terhitung sebagai anggota tim bagi level di bawahnya.
+// - ANGGOTA_TAMBAHAN_NAMA tidak dipakai pada mode ini.
+// - Status cuti pejabat L3 & L4 dikirim terpisah lewat props 'atasanPejabat'
+//   dan dihitung langsung dari tabel pengajuan_cutis (tidak bergantung pada
+//   data cuti tim yang dibatasi wilayah), lalu ditampilkan di bagian "Atasan".
+// ================= END PERBAIKAN HIERARKI =================
 //
 // ================= PERBAIKAN (TGH / CUTI DITANGGUHKAN MENGURANGI SALDO) =================
 // Halaman Rekap Kuota (admin) mengurangi Sisa 2026 dan Saldo Akhir dengan
@@ -86,7 +116,7 @@ use Carbon\Carbon;
 //   1. Akun atasan sendiri (role 2, 3, 4, 6) IKUT di daftar 'anggotaTim'
 //      (sebelumnya selalu dibuang lewat id != user->id), sehingga namanya
 //      bisa dicari di popup Daftar Anggota Tim. Admin HR (role 5) tetap
-//      tidak dihitung seperti sebelumnya.
+//      tidak dihitung seperti sebelumnya. (Hanya bila MODE_ATASAN_TERPISAH = false.)
 //   2. 'cuti_tim_bulan_ini' dan 'timCutiHariIni' hanya menghitung pegawai
 //      yang ADA di daftar 'anggotaTim' (whereIn id), jadi angka di kartu
 //      selalu sama dengan isi popup: 3 orang cuti = 3 nama di popup.
@@ -102,7 +132,7 @@ use Carbon\Carbon;
 //   1. Untuk L1 (role 2) dan L2 (role 3), pejabat L3 (role 4, Kasubag TU)
 //      IKUT di daftar 'anggotaTim' (ROLE_L3). Aturan ini berada di grup
 //      yang sama dengan anggota tambahan, jadi filter AKTIF & tanggal masuk
-//      tetap berlaku.
+//      tetap berlaku. (Hanya bila MODE_ATASAN_TERPISAH = false.)
 //   2. Karena KPI ('cuti_tim_bulan_ini', 'timCutiHariIni') dihitung dari
 //      daftar anggota, cuti L3 otomatis ikut terhitung & tampil di popup.
 //   3. Kalender "Ketersediaan Tim" ($allCutiDisetujui) sekarang memakai
@@ -120,25 +150,40 @@ use Carbon\Carbon;
 // ================= END PERBAIKAN DISETUJUI BULAN INI =================
 class DashboardController extends Controller
 {
+    // ================= SAKLAR MODE KEANGGOTAAN TIM =================
+    // true  (DIPAKAI SEKARANG): 'anggotaTim' hanya level di bawah pengguna &
+    //         tanpa akun sendiri; pejabat L3/L4 dikirim terpisah lewat
+    //         'atasanPejabat' (bagian "Atasan" di popup).
+    // false : atasan sendiri (role 2, 3, 4, 6) & pejabat L3 (untuk L1/L2) ikut
+    //         di 'anggotaTim'; 'atasanPejabat' kosong; ANGGOTA_TAMBAHAN_NAMA aktif.
+    private const MODE_ATASAN_TERPISAH = true;
+
+
     // Kolom & nilai yang menandai pegawai pensiun. Ubah KOLOM_STATUS_PEGAWAI
     // menjadi 'status_aktif' bila di tabel pegawais nilai Pensiun disimpan di
     // kolom itu.
     private const KOLOM_STATUS_PEGAWAI = 'status_aktif';
     private const STATUS_PENSIUN = 'Pensiun';
 
+
     // Nilai status yang dianggap AKTIF (NULL juga dianggap aktif).
     private const STATUS_AKTIF = 'Aktif';
+
 
     // Kolom tanggal pegawai mulai terdaftar/masuk. Ganti ke 'tanggal_masuk'
     // (atau nama kolom yang sesuai) jika tabel pegawais punya kolom itu.
     private const KOLOM_TANGGAL_MASUK = 'created_at';
 
-    // role_id pejabat L3 (Kasubag TU). Ikut tampil di tim milik L1 & L2.
+
+    // role_id pejabat L3 (Kasubag TU). Ikut tampil di tim milik L1 & L2
+    // (hanya pada MODE_ATASAN_TERPISAH = false).
     private const ROLE_L3 = 4;
+
 
     // Pegawai yang harus selalu ikut terhitung sebagai anggota tim (dicocokkan
     // dengan LIKE pada kolom nama), walaupun data wilayahnya tidak cocok.
     // Contoh menambah Pak Agus: tambahkan nama lengkapnya, mis. 'AGUS ...'.
+    // Tidak dipakai pada MODE_ATASAN_TERPISAH = true.
     private const ANGGOTA_TAMBAHAN_NAMA = ['SETA RUKMALASARI'];
 
 
@@ -204,6 +249,7 @@ class DashboardController extends Controller
         // + ditangguhkan. Inilah angka yang dikurangkan dari Hak, sehingga
         // Sisa = Hak - Terpakai Total (rumus standar, tanpa pengurang kedua).
         $terpakaiTotal = $terpakai + $tangguh;
+
 
         $sisaKuotaTahunIni = max($kuota - $terpakaiTotal, 0);
         $totalTersedia     = max(($kuota + $bawaanEligible + $dikembalikan) - $terpakaiTotal, 0);
@@ -305,17 +351,24 @@ class DashboardController extends Controller
 
     /**
      * Query "Anggota Tim" untuk dashboard atasan/admin.
-     *   - Aturan wilayah (role, tim_kerja/kelompok_substansi, filter Divisi)
-     *     dibungkus dalam SATU grup, lalu anggota tambahan (nama), akun
-     *     atasan sendiri (role 2, 3, 4, 6) dan pejabat L3 untuk L1 & L2
-     *     ditambahkan dengan orWhere di dalam grup yang sama. Admin HR
-     *     (role 5) tidak ikut dihitung.
-     *   - Di luar grup (berlaku untuk SEMUA baris, termasuk anggota tambahan,
-     *     akun sendiri dan L3):
-     *       * AKTIF (status NULL atau 'Aktif'; Pensiun & status lain dibuang),
-     *       * sudah terdaftar pada/ sebelum akhir $tahun (pegawai baru di
-     *         tahun itu ikut bertambah, pegawai yang baru masuk tahun
-     *         berikutnya belum dihitung).
+     *
+     * Aturan wilayah (role, tim_kerja/kelompok_substansi, filter Divisi)
+     * dibungkus dalam SATU grup, lalu tambahan (akun sendiri, L3, anggota
+     * tambahan) ditambahkan dengan orWhere di dalam grup yang sama.
+     *
+     * MODE_ATASAN_TERPISAH = false:
+     *   - L3/L4/HR melihat semua role selain Admin HR; role lain hanya role 1.
+     *   - Akun atasan sendiri (role 2, 3, 4, 6) ikut; pejabat L3 ikut untuk
+     *     L1 & L2; anggota tambahan (nama) ikut. Admin HR tidak dihitung.
+     * MODE_ATASAN_TERPISAH = true:
+     *   - Hanya role di BAWAH pengguna ($roleBawahan), tanpa akun sendiri,
+     *     tanpa anggota tambahan. L3 & L4 ditampilkan lewat 'atasanPejabat'.
+     *
+     * Di luar grup (berlaku untuk SEMUA baris):
+     *   * AKTIF (status NULL atau 'Aktif'; Pensiun & status lain dibuang),
+     *   * sudah terdaftar pada/ sebelum akhir $tahun (pegawai baru di
+     *     tahun itu ikut bertambah, pegawai yang baru masuk tahun
+     *     berikutnya belum dihitung).
      */
     private function queryAnggotaTim(
         Pegawai $user,
@@ -324,15 +377,31 @@ class DashboardController extends Controller
         ?string $kelompokSubstansiFilter,
         int $tahun
     ) {
-        $kolomStatus  = self::KOLOM_STATUS_PEGAWAI;
-        $kolomMasuk   = self::KOLOM_TANGGAL_MASUK;
-        $akhirTahun   = Carbon::create($tahun, 12, 31)->endOfDay();
+        $kolomStatus = self::KOLOM_STATUS_PEGAWAI;
+        $kolomMasuk  = self::KOLOM_TANGGAL_MASUK;
+        $akhirTahun  = Carbon::create($tahun, 12, 31)->endOfDay();
+        $terpisah    = self::MODE_ATASAN_TERPISAH;
+
+
+        // Role yang dianggap "anggota tim" pada mode hierarki.
+        //   L4 (6): L3 ke bawah | L3 (4): L2 ke bawah | L2 (3): L1 & L2
+        //   Admin HR (5): L1-L3 (L3 & L4 tampil di bagian "Atasan")
+        //   L1 (2) & lainnya: pegawai biasa
+        $roleBawahan = match ($user->role_id) {
+            6       => [1, 2, 3, 4],
+            4       => [1, 2, 3],
+            3       => [1, 2],
+            5       => [1, 2, 3],
+            default => [1],
+        };
 
 
         return Pegawai::query()
-            ->where(function ($q) use ($user, $wilayahField, $wilayahValue, $kelompokSubstansiFilter) {
-                $q->where(function ($scope) use ($user, $wilayahField, $wilayahValue, $kelompokSubstansiFilter) {
-                    if (in_array($user->role_id, [3, 4, 5, 6], true)) {
+            ->where(function ($q) use ($user, $roleBawahan, $terpisah, $wilayahField, $wilayahValue, $kelompokSubstansiFilter) {
+                $q->where(function ($scope) use ($user, $roleBawahan, $terpisah, $wilayahField, $wilayahValue, $kelompokSubstansiFilter) {
+                    if ($terpisah) {
+                        $scope->whereIn('role_id', $roleBawahan);
+                    } elseif (in_array($user->role_id, [3, 4, 5, 6], true)) {
                         $scope->where('role_id', '!=', 5);
                     } else {
                         $scope->where('role_id', 1);
@@ -351,26 +420,28 @@ class DashboardController extends Controller
                 // Akun atasan sendiri ikut di daftar (agar cutinya sendiri
                 // bisa dilihat & dicari di popup). Tidak dipakai saat filter
                 // Divisi aktif (mengikuti aturan wilayah biasa).
-                if (!$kelompokSubstansiFilter && in_array($user->role_id, [2, 3, 4, 6], true)) {
+                if (!$terpisah && !$kelompokSubstansiFilter && in_array($user->role_id, [2, 3, 4, 6], true)) {
                     $q->orWhere('id', $user->id);
                 }
 
 
                 // Pejabat L3 (role 4) ikut di tim milik L1 (role 2) & L2
                 // (role 3), tanpa terikat aturan wilayah.
-                if (!$kelompokSubstansiFilter && in_array($user->role_id, [2, 3], true)) {
+                if (!$terpisah && !$kelompokSubstansiFilter && in_array($user->role_id, [2, 3], true)) {
                     $q->orWhere('role_id', self::ROLE_L3);
                 }
 
 
                 // Anggota tambahan (mis. data wilayahnya tidak cocok dengan
                 // aturan di atas). Tidak dipakai saat filter Divisi aktif.
-                if (!$kelompokSubstansiFilter) {
+                if (!$terpisah && !$kelompokSubstansiFilter) {
                     foreach (self::ANGGOTA_TAMBAHAN_NAMA as $nama) {
                         $q->orWhere('nama', 'LIKE', '%' . $nama . '%');
                     }
                 }
             })
+            // Mode hierarki: akun sendiri tidak ikut.
+            ->when($terpisah, fn($q) => $q->where('id', '!=', $user->id))
             // Hanya pegawai AKTIF (NULL dianggap aktif).
             ->where(function ($q) use ($kolomStatus) {
                 $q->whereNull($kolomStatus)
@@ -381,6 +452,65 @@ class DashboardController extends Controller
                 $q->whereNull($kolomMasuk)
                     ->orWhere($kolomMasuk, '<=', $akhirTahun);
             });
+    }
+
+
+    /**
+     * Pejabat L3 (role 4) & L4 (role 6) yang statusnya ditampilkan di bagian
+     * "Atasan" pada modal Daftar Anggota Tim. HANYA terisi bila
+     * MODE_ATASAN_TERPISAH = true; selain itu mengembalikan koleksi kosong.
+     *   - L1, L2 (role 2, 3) & Admin HR (5): melihat L3 dan L4
+     *   - L3 (role 4): hanya melihat L4
+     *   - L4 (role 6) & role 1: tidak ada bagian ini
+     * Status "sedang cuti" dihitung langsung dari pengajuan_cutis sehingga
+     * tidak bergantung pada data cuti tim yang dibatasi wilayah.
+     */
+    private function dataAtasanPejabat(Pegawai $user)
+    {
+        if (!self::MODE_ATASAN_TERPISAH) {
+            return collect();
+        }
+
+
+        $rolePejabat = match ($user->role_id) {
+            2, 3, 5 => [4, 6],
+            4       => [6],
+            default => [],
+        };
+
+
+        if (empty($rolePejabat)) {
+            return collect();
+        }
+
+
+        $pejabat = Pegawai::whereIn('role_id', $rolePejabat)
+            ->where('id', '!=', $user->id)
+            ->where(function ($q) {
+                $q->whereNull(self::KOLOM_STATUS_PEGAWAI)
+                    ->orWhere(self::KOLOM_STATUS_PEGAWAI, '!=', self::STATUS_PENSIUN);
+            })
+            ->select('id', 'nama', 'nip', 'jabatan', 'foto_profil', 'role_id')
+            ->get()
+            ->sortByDesc('role_id'); // L4 dulu, lalu L3
+
+
+        $idSedangCuti = PengajuanCuti::whereIn('pegawai_id', $pejabat->pluck('id'))
+            ->where('status', 'disetujui')
+            ->whereDate('tanggal_mulai', '<=', Carbon::today())
+            ->whereDate('tanggal_selesai', '>=', Carbon::today())
+            ->pluck('pegawai_id')
+            ->all();
+
+
+        return $pejabat->map(fn($p) => [
+            'id'          => $p->id,
+            'nama'        => $p->nama,
+            'nip'         => $p->nip,
+            'foto_profil' => $p->foto_profil,
+            'label_level' => $p->role_id === 6 ? 'Kepala Biro Perencanaan' : 'Kepala Subbagian Tata Usaha',
+            'sedang_cuti' => in_array($p->id, $idSedangCuti),
+        ])->values();
     }
 
 
@@ -654,9 +784,8 @@ class DashboardController extends Controller
 
             // --- Anggota Tim ---
             // Lewat queryAnggotaTim(): hanya pegawai AKTIF yang sudah
-            // terdaftar pada/ sebelum akhir tahun berjalan, ditambah anggota
-            // tambahan (ANGGOTA_TAMBAHAN_NAMA), akun atasan sendiri
-            // (role 2, 3, 4, 6) dan pejabat L3 untuk L1 & L2.
+            // terdaftar pada/ sebelum akhir tahun berjalan. Aturan siapa yang
+            // ikut bergantung pada MODE_ATASAN_TERPISAH (lihat catatan di atas).
             $anggotaTim = $this->queryAnggotaTim(
                 $user,
                 $wilayahField,
@@ -743,7 +872,7 @@ class DashboardController extends Controller
             // Dipakai kalender "Ketersediaan Tim". Cuti lintas tahun tetap
             // ikut sehingga tanggalnya di tahun ini tetap tertandai.
             // Memakai daftar anggota yang sama dengan popup (whereIn), jadi
-            // cuti atasan sendiri dan L3 (untuk L1/L2) ikut tertandai.
+            // cuti sesuai keanggotaan pada mode yang aktif ikut tertandai.
             $allCutiDisetujui = PengajuanCuti::with($withAtasanTim)
                 ->whereIn('pegawai_id', $idAnggota)
                 ->where('status', 'disetujui')
@@ -891,6 +1020,11 @@ class DashboardController extends Controller
         $this->attachNamaApproverL1L2KePegawai($cutiDisetujuiBulanIni);
 
 
+        // Pejabat L3 & L4 untuk bagian "Atasan" di modal Daftar Anggota Tim
+        // (kosong bila MODE_ATASAN_TERPISAH = false).
+        $atasanPejabat = $this->dataAtasanPejabat($user);
+
+
         return Inertia::render('Dashboard', [
             'stats'                     => $stats,
             'recentCuti'                => $recentCuti,
@@ -903,6 +1037,7 @@ class DashboardController extends Controller
             'chartDataPribadi'          => $chartDataPribadi,
             'hariLiburs'                => $hariLiburs,
             'anggotaTim'                => $anggotaTim,
+            'atasanPejabat'             => $atasanPejabat,
             'timCutiHariIni'            => $timCutiHariIni,
             'isAdminHR'                 => $isAdminHR,
             'recentCutiPribadi'         => $recentCutiPribadi,

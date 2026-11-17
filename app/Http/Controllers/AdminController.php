@@ -37,14 +37,22 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 // (tabel koreksi_cuti_bulanan, model KoreksiCutiBulanan). Rekap Kuota Detail
 // hanya menampilkan totalnya, jadi angka tidak mungkin bentrok.
 //
-//   - buildLaporanData()     : tiap bulan memakai nilai koreksi bila ada, selain itu
-//                              hitungan sistem. Field baru ke Vue: cuti_sistem,
+//   - buildLaporanData()     : tiap bulan = hitungan sistem SEKARANG + selisih koreksi
+//                              (nilai - nilai_sistem). Field baru ke Vue: cuti_sistem,
 //                              cuti_diedit, cuti_basi, ada_koreksi_bulanan,
 //                              tgh_tahunan, koreksi_tahunan_lama.
 //   - updateKoreksiLaporan() : method BARU, simpan koreksi bulanan + total Tgh tahun
 //                              laporan. Hanya Admin HR (role 5).
 //   - exportExcel()          : sel bulan yang dikoreksi diberi warna kuning.
 //   - hitungSisaOtomatis()   : memakai SaldoCuti::terpakaiEfektif() (ikut koreksi).
+//
+// [PERBAIKAN KOREKSI = SELISIH] Sebelumnya koreksi bulanan dipakai sebagai angka
+// MUTLAK yang menimpa hitungan sistem, sehingga cuti baru yang disetujui di bulan
+// yang sudah dikoreksi "hilang". Sekarang koreksi berupa SELISIH:
+//   tampil = sistem sekarang + (nilai - nilai_sistem)
+// Contoh: sistem 3, koreksi jadi 4 (selisih +1), lalu ada cuti baru -> sistem 4,
+// tampil 5. Kolom `nilai` yang tersimpan = angka tampil saat koreksi dibuat,
+// kolom `nilai_sistem` = hitungan sistem saat koreksi dibuat.
 // ================= END PERUBAHAN =================
 
 class AdminController extends Controller
@@ -654,7 +662,7 @@ class AdminController extends Controller
     // $tahun. Cuti lintas tahun (mis. 31 Des 2026 - 4 Jan 2027) otomatis terbagi:
     // bagian Desember dihitung di 2026, bagian Januari dihitung di 2027.
     // Hari yang dihitung: Senin-Jumat di luar tabel hari_liburs.
-    private function hitungHariCutiPerBulan($cuti, int $tahun, array $libur): array
+    private function hitungHariCutiPerBulan(PengajuanCuti $cuti, int $tahun, array $libur): array
     {
         $hasil = array_fill_keys($this->keyBulan, 0);
 
@@ -698,10 +706,10 @@ class AdminController extends Controller
     // tanggal_mulai-nya di tahun itu), supaya cuti yang mulai di akhir tahun
     // sebelumnya tetap terbaca di Januari tahun laporan.
     //
-    // [KOREKSI BULANAN] Tiap kotak bulan = nilai koreksi Admin HR (tabel
-    // koreksi_cuti_bulanan) bila ada, selain itu hitungan sistem dari pengajuan
-    // cuti disetujui. Hitungan sistem tetap dikirim lewat `cuti_sistem` supaya
-    // Vue bisa menampilkan angka semula.
+    // [KOREKSI BULANAN = SELISIH] Tiap kotak bulan = hitungan sistem SEKARANG +
+    // selisih koreksi Admin HR (nilai - nilai_sistem, tabel koreksi_cuti_bulanan).
+    // Hitungan sistem tetap dikirim lewat `cuti_sistem` supaya Vue bisa menampilkan
+    // angka "Sistem" di form koreksi.
     //
     // [TGH IKUT TOTAL - SINKRON RKD] Tgh tahun laporan dibaca LANGSUNG dari tabel
     // cuti_ditangguhkans (SUM jumlah_hari per tahun_asal = tahun laporan), sumber
@@ -733,8 +741,9 @@ class AdminController extends Controller
     //   'cuti'                : hari per bulan SETELAH koreksi
     //   'cuti_sistem'         : hari per bulan murni hitungan sistem
     //   'cuti_diedit'         : [key bulan => true/false] sel yang dikoreksi Admin HR
-    //   'cuti_basi'           : [key bulan => true/false] koreksi yang angka sistemnya
-    //                           sudah berubah sejak koreksi dibuat (perlu dicek ulang)
+    //   'cuti_basi'           : [key bulan => true/false] selalu false (koreksi berupa
+    //                           selisih sehingga tidak pernah basi); dipertahankan agar
+    //                           Vue lama tetap kompatibel
     //   'ada_koreksi_bulanan' : true bila pegawai punya minimal 1 koreksi bulanan
     //   'koreksi_tahunan_lama': koreksi_saldo tahunan lama (null bila tidak ada /
     //                           sudah digantikan koreksi bulanan)
@@ -870,11 +879,14 @@ class AdminController extends Controller
                 }
             }
 
-            // [KOREKSI BULANAN] Terapkan koreksi Admin HR per bulan di atas hitungan
-            // sistem. $rekapBulan = angka yang tampil (setelah koreksi).
+            // [KOREKSI BULANAN = SELISIH] Terapkan koreksi Admin HR per bulan di atas
+            // hitungan sistem SEKARANG:
+            //   tampil = sistem sekarang + (nilai - nilai_sistem)
+            // sehingga cuti baru yang disetujui di bulan yang sudah dikoreksi tetap
+            // ikut terhitung. $rekapBulan = angka yang tampil (setelah koreksi).
             $rekapBulan = $rekapSistem;
             $cutiDiedit = array_fill_keys($this->keyBulan, false);
-            $cutiBasi = array_fill_keys($this->keyBulan, false);
+            $cutiBasi = array_fill_keys($this->keyBulan, false); // selalu false (koreksi = selisih)
             $barisKoreksi = $koreksiBulanan->get($pegawai->id, collect());
 
             foreach ($barisKoreksi as $baris) {
@@ -882,9 +894,9 @@ class AdminController extends Controller
                 if ($key === null) {
                     continue;
                 }
-                $rekapBulan[$key] = (int) $baris->nilai;
+                $selisih = (int) $baris->nilai - (int) $baris->nilai_sistem;
+                $rekapBulan[$key] = max(0, (int) $rekapSistem[$key] + $selisih);
                 $cutiDiedit[$key] = true;
-                $cutiBasi[$key] = (int) $baris->nilai_sistem !== (int) $rekapSistem[$key];
             }
 
             $adaKoreksiBulanan = $barisKoreksi->isNotEmpty();
@@ -1053,6 +1065,7 @@ class AdminController extends Controller
     // tidak ditampilkan, dan cakupan data selaras dengan Dashboard.
     //
     // Setiap pegawai membawa:
+    //   - `saldo_cuti` tahun berjalan (eager load, untuk prefill form edit saldo)
     //   - `bisa_dihapus` (boolean): PERTAHANAN LAPIS 1 (pop-up dinamis).
     //   - `tanggal_masuk_form` (Y-m-d / null): untuk kolom TMT di form edit.
     //   - `status_kepegawaian` (PNS / PPPK / null): ikut otomatis dari kolom tabel.
@@ -1065,7 +1078,10 @@ class AdminController extends Controller
     {
         $tahun = date('Y');
 
-        $pegawai = Pegawai::sesuaiHierarki($request->user()) // [SINKRON HIERARKI]
+        $pegawai = Pegawai::with(['saldoCuti' => function ($query) use ($tahun) {
+            $query->where('tahun', $tahun);
+        }])
+            ->sesuaiHierarki($request->user()) // [SINKRON HIERARKI]
             ->orderBy('nama', 'asc')
             ->get();
 
@@ -1974,6 +1990,14 @@ class AdminController extends Controller
     //           RekapKuotaDetailController::setTotalDitangguhkan() yang SAMA dengan
     //           yang dipakai Rekap Kuota Detail.
     //
+    // [KOREKSI = SELISIH] Angka yang diketik Admin HR disimpan sebagai SELISIH
+    // terhadap hitungan sistem saat itu:
+    //   kolom `nilai`        = angka yang diketik (angka tampil saat koreksi dibuat)
+    //   kolom `nilai_sistem` = hitungan sistem saat koreksi dibuat
+    //   selisih              = nilai - nilai_sistem
+    // Angka tampil seterusnya = hitungan sistem SEKARANG + selisih, jadi cuti
+    // baru yang disetujui di bulan itu tetap ikut terhitung.
+    //
     // Aturan:
     //   - Terpakai efektif baru tidak boleh melebihi Total Hak Tersedia
     //     (Hak + Bawaan Eligible + Tgh tahun lalu), sama dengan batas di RKD.
@@ -2012,10 +2036,11 @@ class AdminController extends Controller
         }
 
         // ---- Hitung perubahan per bulan (belum menulis apa pun) ----
+        // $deltaLama / $deltaBaru = [bulan => selisih koreksi (nilai - nilai_sistem)].
         $kiriman = (array) $request->input('cuti', []);
         $sistemPerBulan = SaldoCuti::terpakaiMurniPerBulan($pegawaiId, $tahun);
-        $petaLama = KoreksiCutiBulanan::petaTahun($pegawaiId, $tahun);
-        $petaBaru = $petaLama;
+        $deltaLama = SaldoCuti::petaSelisihTahun($pegawaiId, $tahun);
+        $deltaBaru = $deltaLama;
         $perubahanBulan = [];
 
         foreach ($this->keyBulan as $idx => $key) {
@@ -2028,13 +2053,13 @@ class AdminController extends Controller
             $sistem = (int) ($sistemPerBulan[$bulan] ?? 0);
 
             if ($nilai === null || $nilai === '' || (int) $nilai === $sistem) {
-                unset($petaBaru[$bulan]);   // kembali ke hitungan sistem
+                unset($deltaBaru[$bulan]);                    // kembali ke hitungan sistem
             } else {
-                $petaBaru[$bulan] = (int) $nilai;
+                $deltaBaru[$bulan] = (int) $nilai - $sistem;  // simpan sebagai selisih
             }
 
-            $tampilLama = $petaLama[$bulan] ?? $sistem;
-            $tampilBaru = $petaBaru[$bulan] ?? $sistem;
+            $tampilLama = max(0, $sistem + ($deltaLama[$bulan] ?? 0));
+            $tampilBaru = max(0, $sistem + ($deltaBaru[$bulan] ?? 0));
 
             if ($tampilLama !== $tampilBaru) {
                 $perubahanBulan[] = [
@@ -2064,12 +2089,8 @@ class AdminController extends Controller
         $terpakaiLama = SaldoCuti::terpakaiEfektif($pegawaiId, $tahun, $saldo);
         $murni = SaldoCuti::terpakaiMurni($pegawaiId, $tahun);
 
-        if (!empty($petaBaru)) {
-            $selisih = 0;
-            foreach ($petaBaru as $bulan => $nilai) {
-                $selisih += (int) $nilai - (int) ($sistemPerBulan[$bulan] ?? 0);
-            }
-            $terpakaiHitung = max(0, $murni + $selisih);
+        if (!empty($deltaBaru)) {
+            $terpakaiHitung = max(0, $murni + array_sum($deltaBaru));
         } else {
             $terpakaiHitung = $saldo->koreksi_saldo !== null
                 ? max(0, (int) $saldo->koreksi_saldo)
@@ -2101,7 +2122,7 @@ class AdminController extends Controller
             $saldo,
             $request,
             $perubahanBulan,
-            $petaBaru,
+            $deltaBaru,
             $tghBerubah,
             $tghTarget,
             $tghLama,
@@ -2109,11 +2130,13 @@ class AdminController extends Controller
             &$terpakaiBaru
         ) {
             foreach ($perubahanBulan as $p) {
-                if (isset($petaBaru[$p['bulan']])) {
+                if (isset($deltaBaru[$p['bulan']])) {
+                    // nilai = angka tampil saat ini, nilai_sistem = hitungan sistem
+                    // saat ini; selisihnya (nilai - nilai_sistem) = $deltaBaru[bulan].
                     KoreksiCutiBulanan::updateOrCreate(
                         ['pegawai_id' => $pegawaiId, 'tahun' => $tahun, 'bulan' => $p['bulan']],
                         [
-                            'nilai' => $petaBaru[$p['bulan']],
+                            'nilai' => $p['baru'],
                             'nilai_sistem' => $p['sistem'],
                             'diubah_oleh' => $request->user()->id,
                         ]
@@ -2127,7 +2150,7 @@ class AdminController extends Controller
             }
 
             // Koreksi bulanan menggantikan koreksi tahunan lama.
-            if (!empty($perubahanBulan) && !empty($petaBaru) && $saldo->koreksi_saldo !== null) {
+            if (!empty($perubahanBulan) && !empty($deltaBaru) && $saldo->koreksi_saldo !== null) {
                 DB::table('saldo_cutis')
                     ->where('pegawai_id', $pegawaiId)
                     ->where('tahun', $tahun)
@@ -2198,14 +2221,14 @@ class AdminController extends Controller
                 'hak' => $hak,
                 'carry' => $carry,
                 'dua_tahun_lalu' => $duaTahunLalu,
-                'koreksi' => !empty($petaLama) ? $terpakaiLama : null,
+                'koreksi' => !empty($deltaLama) ? $terpakaiLama : null,
                 'terpakai' => $terpakaiLama,
             ],
             [
                 'hak' => $hak,
                 'carry' => $carry,
                 'dua_tahun_lalu' => $duaTahunLalu,
-                'koreksi' => !empty($petaBaru) ? $terpakaiBaru : null,
+                'koreksi' => !empty($deltaBaru) ? $terpakaiBaru : null,
                 'terpakai' => $terpakaiBaru,
             ],
             $terpakaiBaru
@@ -2215,7 +2238,7 @@ class AdminController extends Controller
     }
     // ================= END KOREKSI BULANAN REKAP LAPORAN =================
 
-   // 5. Export Data Rekap Cuti ke Excel
+    // 5. Export Data Rekap Cuti ke Excel
     //
     // Kolom: No | Nama | NIP | bulan... | Tgh | Total Cuti | Keterangan
     //   - Kolom Jabatan SENGAJA dihapus dari file Excel.
@@ -2260,7 +2283,7 @@ class AdminController extends Controller
 
         $nBulan = count($exportLabelBulan);
         $bulanStartCol = 4; // D (setelah No, Nama, NIP)
-        
+
         // [FILTER BULAN] Kolom Tgh hanya ada di mode "Semua Bulan".
         $tghCol = $filterBulanAktif ? null : $bulanStartCol + $nBulan;
         $totalCol = $filterBulanAktif ? $bulanStartCol + $nBulan : $tghCol + 1;
@@ -2599,6 +2622,7 @@ class AdminController extends Controller
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         ]);
     }
+
     // 6. Menangguhkan cuti (HANYA L4 / Kepala Biro)
     //
     // [PERBAIKAN TGH] Method ini SENGAJA hanya meneruskan ke

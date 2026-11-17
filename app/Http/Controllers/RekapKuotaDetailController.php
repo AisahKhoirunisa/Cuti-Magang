@@ -39,8 +39,12 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 //                      Tgh tetap bisa diedit di sini.
 //   - Field baru ke Vue: 'ada_koreksi_bulanan', 'koreksi_bulanan' (bulan => nilai),
 //                      'terpakai_dikunci' (selalu true).
-//   - kirimNotifikasiPerubahanSaldo() dibuat public supaya AdminController bisa
-//                      memakainya setelah koreksi bulanan disimpan.
+//   - kirimNotifikasiPerubahanSaldo() & setTotalDitangguhkan() dibuat public
+//                      supaya AdminController bisa memakainya setelah koreksi
+//                      bulanan disimpan.
+//   - buildQuery()   : pengajuan cuti yang di-eager load dibatasi pada yang
+//                      bersinggungan dengan tahun yang dilihat (cuti lintas tahun
+//                      tampil di kedua tahunnya).
 // ================= END PERUBAHAN =================
 
 class RekapKuotaDetailController extends Controller
@@ -546,7 +550,8 @@ class RekapKuotaDetailController extends Controller
     // yang aktif (dipakai hanya untuk pilihan kalimat di pesan).
     //
     // Perubahan Tgh (ditangguhkan) SENGAJA tidak ikut notifikasi: angkanya
-    // belum dicatat di sini (Tgh tahun ini kini memotong saldo, tetapi angka saldo di pesan sudah memakainya).
+    // belum dicatat di sini (Tgh tahun ini kini memotong saldo, tetapi angka
+    // saldo di pesan sudah memakainya).
     public function kirimNotifikasiPerubahanSaldo(
         Pegawai $pegawai,
         int $tahunIni,
@@ -632,6 +637,9 @@ class RekapKuotaDetailController extends Controller
     //             (dikurangi, atau dihapus kalau jadi 0).
     // Pengaruh Tgh ke saldo diatur oleh TGH_MASUK_TOTAL (Tgh N-1 masuk Total
     // Tersedia) dan TGH_TAHUN_INI_MENGURANGI_SISA (Tgh N mengurangi Sisa & Saldo Akhir).
+    //
+    // PUBLIC supaya AdminController::updateKoreksiLaporan() memakai jalur yang
+    // SAMA saat Admin HR mengedit total Tgh dari Rekap Laporan.
     public function setTotalDitangguhkan(int $pegawaiId, int $tahunAsal, int $target): void
     {
         $target = max(0, $target);
@@ -778,11 +786,13 @@ class RekapKuotaDetailController extends Controller
         $catatPerubahan('sisa_n1', $lama['carry'], $baru['carry']);
         $catatPerubahan('sisa_n2', $lama['dua_tahun_lalu'], $baru['dua_tahun_lalu']);
 
-        foreach ([
-            'tgh_n2' => ['sisa_ditangguhkan_dua_tahun_lalu', $tahunIni - 2],
-            'tgh_n1' => ['sisa_ditangguhkan_tahun_lalu', $tahunIni - 1],
-            'tgh_n0' => ['sisa_ditangguhkan_tahun_ini', $tahunIni],
-        ] as $kolomLog => [$fieldTgh, $tahunAsalTgh]) {
+        foreach (
+            [
+                'tgh_n2' => ['sisa_ditangguhkan_dua_tahun_lalu', $tahunIni - 2],
+                'tgh_n1' => ['sisa_ditangguhkan_tahun_lalu', $tahunIni - 1],
+                'tgh_n0' => ['sisa_ditangguhkan_tahun_ini', $tahunIni],
+            ] as $kolomLog => [$fieldTgh, $tahunAsalTgh]
+        ) {
             if ($request->has($fieldTgh) && $request->input($fieldTgh) !== null && $request->input($fieldTgh) !== '') {
                 $tghLama = (int) CutiDitangguhkan::where('pegawai_id', $pegawai->id)
                     ->where('tahun_asal', $tahunAsalTgh)
@@ -823,11 +833,13 @@ class RekapKuotaDetailController extends Controller
 
         // Tgh: hanya field yang benar-benar dikirim yang diproses.
         // Nilai 0 SAH (artinya "tidak ada hari ditangguhkan").
-        foreach ([
-            'sisa_ditangguhkan_dua_tahun_lalu' => $tahunIni - 2,
-            'sisa_ditangguhkan_tahun_lalu'     => $tahunIni - 1,
-            'sisa_ditangguhkan_tahun_ini'      => $tahunIni,
-        ] as $field => $tahunAsal) {
+        foreach (
+            [
+                'sisa_ditangguhkan_dua_tahun_lalu' => $tahunIni - 2,
+                'sisa_ditangguhkan_tahun_lalu'     => $tahunIni - 1,
+                'sisa_ditangguhkan_tahun_ini'      => $tahunIni,
+            ] as $field => $tahunAsal
+        ) {
             if ($request->has($field) && $request->input($field) !== null && $request->input($field) !== '') {
                 $this->setTotalDitangguhkan((int) $pegawai->id, $tahunAsal, (int) $request->input($field));
             }
@@ -948,7 +960,7 @@ class RekapKuotaDetailController extends Controller
             }
 
             if (!isset($peta['hak'][$tahunIni])) {
-                $tahunFile = implode(', ', array_keys($peta['hak']));
+                $tahunFile = implode(',', array_keys($peta['hak']));
                 return "File ini untuk tahun {$tahunFile}, sedangkan Filter Tahun aktif {$tahunIni}. Ganti Filter Tahun atau gunakan file yang sesuai.";
             }
 
@@ -1756,10 +1768,21 @@ class RekapKuotaDetailController extends Controller
 
         // Lebar kolom
         $lebar = [
-            'A' => 5,  'B' => 20, 'C' => 30,
-            'D' => 9,  'E' => 13, 'F' => 9,  'G' => 13,
-            'H' => 9,  'I' => 13, 'J' => 13, 'K' => 9,
-            'L' => 13, 'M' => 13, 'N' => 11, 'O' => 11,
+            'A' => 5,
+            'B' => 20,
+            'C' => 30,
+            'D' => 9,
+            'E' => 13,
+            'F' => 9,
+            'G' => 13,
+            'H' => 9,
+            'I' => 13,
+            'J' => 13,
+            'K' => 9,
+            'L' => 13,
+            'M' => 13,
+            'N' => 11,
+            'O' => 11,
         ];
         foreach ($lebar as $col => $w) {
             $sheet->getColumnDimension($col)->setWidth($w);

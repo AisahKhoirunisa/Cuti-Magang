@@ -61,6 +61,10 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    atasanPejabat: {
+        type: Array,
+        default: () => [],
+    },
     recentCutiPribadi: {
         type: Array,
         default: () => [],
@@ -513,14 +517,32 @@ const totalAnggota = computed(() => {
     return Array.isArray(props.anggotaTim) ? props.anggotaTim.length : 0;
 });
 
-// Sumber data "cuti hari ini": pakai timCutiHariIni dari controller (hanya
-// pegawai yang ada di daftar anggota tim, termasuk atasan sendiri) supaya
-// angka kartu SELALU sama dengan isi popup. Cadangan: cutiDisetujuiData.
+// ID anggota tim yang tampil di daftar (dipakai hanya untuk cadangan
+// perhitungan bila prop timCutiHariIni dari controller belum tersedia).
+const idAnggotaTim = computed(
+    () =>
+        new Set(
+            (Array.isArray(props.anggotaTim) ? props.anggotaTim : []).map((a) =>
+                String(a.id),
+            ),
+        ),
+);
+
+// Sumber data "cuti hari ini": utamakan timCutiHariIni dari controller supaya
+// angka kartu SELALU sama dengan isi popup. Cadangan: cutiDisetujuiData yang
+// dibatasi hanya untuk pegawai di daftar anggota tim.
 const sumberCutiHariIni = computed(() => {
     if (Array.isArray(props.timCutiHariIni)) return props.timCutiHariIni;
-    return Array.isArray(props.cutiDisetujuiData)
-        ? props.cutiDisetujuiData
-        : [];
+    if (!Array.isArray(props.cutiDisetujuiData)) return [];
+
+    return props.cutiDisetujuiData.filter((cuti) => {
+        const pegawaiId = cuti.pegawai_id ?? cuti.pegawai?.id;
+        return (
+            pegawaiId !== undefined &&
+            pegawaiId !== null &&
+            idAnggotaTim.value.has(String(pegawaiId))
+        );
+    });
 });
 
 const cutiHariIniCount = computed(() => {
@@ -541,7 +563,7 @@ const cutiHariIniCount = computed(() => {
         if (today >= tanggalMulai && today <= tanggalSelesai) {
             const pegawaiId = cuti.pegawai_id ?? cuti.pegawai?.id ?? cuti.id;
             if (pegawaiId !== undefined && pegawaiId !== null) {
-                pegawaiOnLeave.add(pegawaiId);
+                pegawaiOnLeave.add(String(pegawaiId));
             }
         }
     });
@@ -593,6 +615,49 @@ const isPegawaiCutiHariIni = (pegawaiId) => {
         return today >= tanggalMulai && today <= tanggalSelesai;
     });
 };
+
+// Apakah akun yang login sudah ada di dalam daftar anggotaTim dari controller.
+// Jika sudah, baris "Anda" terpisah tidak ditampilkan agar tidak dobel.
+const selfSudahDiDaftar = computed(() =>
+    (Array.isArray(props.anggotaTim) ? props.anggotaTim : []).some((a) =>
+        isSelf(a.id),
+    ),
+);
+
+// Baris "Anda" di pop up: hanya untuk atasan yang bisa mengajukan cuti
+// sendiri (role 2, 3, 4, 6) dan belum ada di daftar anggotaTim.
+// Admin HR tidak punya cuti pribadi.
+const tampilBarisAnda = computed(() => {
+    if (![2, 3, 4, 6].includes(user.value.role_id)) return false;
+    if (selfSudahDiDaftar.value) return false;
+
+    const keyword = searchAnggota.value.trim().toLowerCase();
+    if (!keyword) return true;
+
+    return String(user.value?.nama || "")
+        .toLowerCase()
+        .includes(keyword);
+});
+
+// Status cuti diri sendiri: dicek dari sumber "cuti hari ini" tim, lalu
+// cadangan dari data cuti pribadi (cuti berstatus "disetujui" yang mencakup
+// hari ini).
+const isSayaCutiHariIni = computed(() => {
+    if (isPegawaiCutiHariIni(user.value?.id)) return true;
+
+    const today = toDateOnlyString(new Date());
+
+    return (props.cutiDisetujuiPribadi || []).some((cuti) => {
+        if (cuti.status !== "disetujui") return false;
+
+        const tanggalMulai = toDateOnlyString(cuti.tanggal_mulai);
+        const tanggalSelesai = toDateOnlyString(
+            cuti.tanggal_selesai || cuti.tanggal_mulai,
+        );
+
+        return today >= tanggalMulai && today <= tanggalSelesai;
+    });
+});
 
 const chartData = computed(() => {
     const months = [
@@ -1543,6 +1608,7 @@ const getStatusBadgeLabelSingkat = (status) => {
         ditangguhkan: "DITANGGUHKAN",
         dibatalkan_ditangguhkan: "DITANGGUHKAN",
         dibatalkan_reguler: "DIBATALKAN",
+        dibatalkan: "DIBATALKAN",
     };
 
     return levelMap[status] || status.replace(/_/g, " ").toUpperCase();
@@ -3440,6 +3506,18 @@ const getCatatanAtasanList = (item) => {
                                             : 'text-amber-800'
                                     "
                                 >
+                                    Sisa setelah disetujui:
+                                    {{ sisaSetelahDisetujui(detailModal.data) }}
+                                    hari
+                                    <template
+                                        v-if="
+                                            sisaSetelahDisetujui(
+                                                detailModal.data,
+                                            ) < 0
+                                        "
+                                    >
+                                        (saldo tidak cukup)
+                                    </template>
                                 </span>
                             </div>
                         </div>
@@ -4110,6 +4188,9 @@ const getCatatanAtasanList = (item) => {
                         </h3>
                         <p class="text-xs font-semibold text-slate-500 mt-0.5">
                             Total terdaftar: {{ anggotaTim.length }} Orang
+                            <span v-if="atasanPejabat.length">
+                                (+ {{ atasanPejabat.length }} atasan)
+                            </span>
                         </p>
                     </div>
                     <button
@@ -4159,6 +4240,121 @@ const getCatatanAtasanList = (item) => {
                 <div
                     class="p-4 max-h-[50vh] overflow-y-auto custom-scrollbar pr-2 space-y-2.5 flex-1"
                 >
+                    <div v-if="tampilBarisAnda" class="space-y-2">
+                        <p
+                            class="text-[10px] font-extrabold uppercase tracking-wider text-emerald-600"
+                        >
+                            Anda
+                        </p>
+                        <div
+                            class="flex items-center gap-3 p-2.5 border border-emerald-200 rounded-xl bg-emerald-50/50"
+                        >
+                            <div
+                                class="w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm shrink-0 overflow-hidden border border-emerald-200"
+                            >
+                                <img
+                                    v-if="user.foto_profil"
+                                    :src="`/storage/${user.foto_profil}`"
+                                    class="w-full h-full object-cover"
+                                />
+                                <span v-else>{{
+                                    user.nama?.charAt(0) || "?"
+                                }}</span>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p
+                                    class="text-sm font-bold text-slate-800 truncate"
+                                >
+                                    {{ user.nama }}
+                                    <span class="font-semibold text-emerald-600"
+                                        >(Anda)</span
+                                    >
+                                </p>
+                                <p
+                                    class="text-xs text-slate-500 mt-0.5 truncate"
+                                >
+                                    {{ user.jabatan || "-" }}
+                                </p>
+                            </div>
+                            <span
+                                v-if="isSayaCutiHariIni"
+                                class="shrink-0 px-2.5 py-0.5 bg-red-50 text-red-600 border border-red-200 rounded-full text-[10px] font-bold"
+                                >Sedang Cuti</span
+                            >
+                            <span
+                                v-else
+                                class="shrink-0 px-2.5 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-200 rounded-full text-[10px] font-bold"
+                                >Tersedia</span
+                            >
+                        </div>
+                        <!-- Pemisah ke daftar anggota bila bagian "Atasan" tidak tampil
+                             (misalnya Kepala Biro, atau saat sedang mencari nama) -->
+                        <p
+                            v-if="
+                                !(atasanPejabat.length && !searchAnggota.trim())
+                            "
+                            class="pt-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-400"
+                        >
+                            Anggota Tim
+                        </p>
+                    </div>
+
+                    <div
+                        v-if="atasanPejabat.length && !searchAnggota.trim()"
+                        class="space-y-2"
+                    >
+                        <p
+                            class="text-[10px] font-extrabold uppercase tracking-wider text-amber-600"
+                        >
+                            Atasan
+                        </p>
+                        <div
+                            v-for="pejabat in atasanPejabat"
+                            :key="'pejabat-' + pejabat.id"
+                            class="flex items-center gap-3 p-2.5 border border-amber-100 rounded-xl bg-amber-50/40"
+                        >
+                            <div
+                                class="w-9 h-9 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-sm shrink-0 overflow-hidden border border-amber-200"
+                            >
+                                <img
+                                    v-if="pejabat.foto_profil"
+                                    :src="`/storage/${pejabat.foto_profil}`"
+                                    class="w-full h-full object-cover"
+                                />
+                                <span v-else>{{
+                                    pejabat.nama?.charAt(0) || "?"
+                                }}</span>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p
+                                    class="text-sm font-bold text-slate-800 truncate"
+                                >
+                                    {{ pejabat.nama }}
+                                </p>
+                                <p
+                                    class="text-xs text-slate-500 mt-0.5 truncate"
+                                >
+                                    {{ pejabat.label_level }}
+                                </p>
+                            </div>
+                            <span
+                                v-if="pejabat.sedang_cuti"
+                                class="shrink-0 px-2.5 py-0.5 bg-red-50 text-red-600 border border-red-200 rounded-full text-[10px] font-bold"
+                                >Sedang Cuti</span
+                            >
+                            <span
+                                v-else
+                                class="shrink-0 px-2.5 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-200 rounded-full text-[10px] font-bold"
+                                >Tersedia</span
+                            >
+                        </div>
+                        <p
+                            class="pt-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-400"
+                        >
+                            Anggota Tim
+                        </p>
+                    </div>
+
                     <div
                         v-for="anggota in filteredAnggotaTim"
                         :key="anggota.id"
@@ -4284,6 +4480,10 @@ const getCatatanAtasanList = (item) => {
                                 Total pengajuan disetujui:
                                 {{ cutiDisetujuiBulanIniList.length }} Pengajuan
                             </p>
+                            <!-- TAMBAHKAN DI SINI (setelah baris Total pengajuan) -->
+                            <p class="text-[11px] text-slate-400 mt-0.5">
+                                {{ isAdminHR ? 'Semua cuti disetujui bulan ini.' : 'Hanya cuti yang Anda setujui sendiri.' }}
+                                </p>
                         </div>
                     </div>
                     <button
