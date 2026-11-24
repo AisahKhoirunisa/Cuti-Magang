@@ -7,6 +7,7 @@ namespace App\Http\Controllers;
 use App\Models\PengajuanCuti;
 use App\Models\Pegawai;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -39,8 +40,12 @@ class LampiranController extends Controller
 
 
         foreach (['local', 'public'] as $disk) {
-            if (Storage::disk($disk)->exists($path)) {
-                return Storage::disk($disk)->response(
+            /** @var FilesystemAdapter $storage */
+            $storage = Storage::disk($disk);
+
+
+            if ($storage->exists($path)) {
+                return $storage->response(
                     $path,
                     basename($path),
                     ['Content-Disposition' => 'inline; filename="' . basename($path) . '"']
@@ -98,6 +103,3 @@ class LampiranController extends Controller
         return false;
     }
 }
-
-
-
